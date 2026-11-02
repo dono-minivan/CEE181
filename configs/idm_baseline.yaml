@@ -1,0 +1,17 @@
+# IDM parameters (SI). Source-to-design: see docs/source_to_design.md
+baseline:   # Treiber, Hennecke & Helbing (2000), Table I
+  v0: 33.3    # desired speed, m/s
+  T: 1.6      # safe time gap, s
+  s0: 2.0     # minimum gap, m
+  a: 0.73     # max acceleration, m/s^2
+  b: 1.67     # comfortable deceleration, m/s^2
+  delta: 4    # acceleration exponent
+  length: 5.0 # vehicle length, m
+sensitivity:  # Treiber & Kesting (2013), Table 11.2
+  v0: 33.3
+  T: 1.0
+  s0: 2.0
+  a: 1.0
+  b: 1.5
+  delta: 4
+  length: 5.0

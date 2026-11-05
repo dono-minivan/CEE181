@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #5f6878; --line: #dde1e8;
+    --grass: #e4ead9; --asphalt: #4a4f59; --marking: #f2f2f2; --queue: #9aa1ad; --accent: #2f6fde;
+    --sel: #1167ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1b1f27; --ink: #e6e9ef; --muted: #9aa3b2; --line: #2c323d;
+      --grass: #1d241b; --asphalt: #3a3f48; --marking: #c9ccd2; --queue: #6c7380; --accent: #6ea0ff;
+      --sel: #7fb0ff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151b; --panel: #1b1f27; --ink: #e6e9ef; --muted: #9aa3b2; --line: #2c323d;
+    --grass: #1d241b; --asphalt: #3a3f48; --marking: #c9ccd2; --queue: #6c7380; --accent: #6ea0ff;
+    --sel: #7fb0ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+          margin-bottom: 12px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+             margin: 0 0 6px; font-weight: 600; }
+  canvas { display: block; width: 100%; touch-action: none; }
+  #closeup { cursor: grab; }
+  #closeup.dragging { cursor: grabbing; }
+  #overview { cursor: pointer; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  .controls button, .controls select { font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+  .controls button.primary { background: var(--accent); color: #fff; border-color: var(--accent); min-width: 76px; }
+  .controls label { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  #time { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 64px; }
+  #scrub { flex: 1 1 260px; min-width: 160px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px 14px; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .legend { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+  .bar { width: 180px; height: 10px; border-radius: 5px; }
+  .chip { display: inline-block; width: 14px; height: 8px; border-radius: 2px; vertical-align: middle; }
+  #info { font-variant-numeric: tabular-nums; }
+  #info table { border-collapse: collapse; }
+  #info td { padding: 1px 12px 1px 0; }
+  #info td:first-child { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <div class="sub" id="subtitle"></div>
+
+  <div class="card">
+    <div class="controls">
+      <button class="primary" id="play">Play</button>
+      <span id="time">0:00</span>
+      <input type="range" id="scrub" min="0" value="0" step="0.1" aria-label="simulation time">
+      <label>Speed
+        <select id="speed">
+          <option value="1">1×</option><option value="2">2×</option><option value="5">5×</option>
+          <option value="10" selected>10×</option><option value="20">20×</option><option value="60">60×</option>
+        </select>
+      </label>
+      <label>Close-up width
+        <select id="zoom">
+          <option value="150">150 m</option><option value="300">300 m</option>
+          <option value="600" selected>600 m</option><option value="1200">1200 m</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="follow"> follow selected</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Whole segment <span class="hint">(click to move the close-up)</span></h2>
+    <canvas id="overview"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Close-up <span class="hint">(drag to pan, click a car to inspect it)</span></h2>
+    <canvas id="closeup"></canvas>
+    <div class="legend" style="margin-top:6px">
+      <span>speed</span><span>0 mph</span><span class="bar" id="bar"></span><span id="vmax"></span>
+      <span style="margin-left:12px"><span class="chip" style="background:var(--queue)"></span> waiting in point queue (drawn for display, takes no road space)</span>
+      <span><span class="chip" style="background:#888;box-shadow:inset 0 0 0 2px #fff"></span> white outline = ramp-origin vehicle</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h2>Now</h2><div class="stats" id="stats"></div></div>
+    <div class="card"><h2>Selected vehicle</h2><div id="info" class="hint">Click a car in the close-up.</div></div>
+  </div>
+  <div class="card"><h2>Run summary (whole simulation)</h2><div class="stats" id="summary"></div></div>
+</main>
+
+<script>
+const D = /*__DATA__*/null;
+const M = D.meta, R = M.ramp, C = D.counts;
+const MPH = 2.236936, FDT = M.frame_dt, NF = M.n_frames, TMAX = (NF - 1) * FDT;
+const QSP = M.s0 + M.veh_len;                     // display spacing for point-queue cars
+const VEH = D.veh.map(r => ({ id: r[0], ramp: r[1] === 1, f0: r[2], mrel: r[3],
+  xs: Float32Array.from(r[4], v => v / 10), vs: Float32Array.from(r[5], v => v / 10), t: r[6] }));
+const byId = new Map(VEH.map(v => [v.id, v]));
+
+// ---------- colors
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function speedColor(v) { const h = Math.max(0, Math.min(1, v / M.v0)) * 130; return `hsl(${h},72%,47%)`; }
+document.getElementById("bar").style.background =
+  `linear-gradient(90deg, ${[0, .25, .5, .75, 1].map(f => `hsl(${f * 130},72%,47%)`).join(",")})`;
+document.getElementById("vmax").textContent = `${Math.round(M.v0 * MPH)} mph (v0)`;
+
+// ---------- text
+document.getElementById("title").textContent = `${M.scenario_id}: animated simulation`;
+document.getElementById("subtitle").textContent =
+  `demand ${M.demand_id} · params ${M.param_set} · seed ${M.seed} · dt ${M.dt_s} s · ` +
+  `segment ${M.L} m` + (R ? ` · on-ramp merge ${R.merge_start}–${R.merge_end} m` : " · no ramp") +
+  ` · computed capacity ${M.q_c_vph} veh/h`;
+const fmtT = s => { s = Math.max(0, s); const m = Math.floor(s / 60), r = Math.floor(s % 60); return `${m}:${String(r).padStart(2, "0")}`; };
+const S = D.summary;
+document.getElementById("summary").innerHTML = [
+  ["vehicles", `${S.n_arrived} (${S.n_arrived_ramp} ramp)`], ["cleared", S.cleared ? `yes, ${fmtT(S.end_time_s)}` : "NO"],
+  ["total travel time", `${S.total_travel_time_veh_h} veh·h`], ["ramp-queue wait", `${S.total_ramp_wait_veh_h} veh·h`],
+  ["peak ramp queue", `${S.peak_ramp_queue_veh} veh`], ["peak entry queue", `${S.peak_entry_queue_veh} veh`],
+  ["min mainline speed", `${(S.min_mainline_speed_mps * MPH).toFixed(1)} mph`], ["unmet demand", `${S.unmet_demand_veh} veh`],
+].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+// ---------- state
+let t = 0, playing = false, speed = 10, center = R ? (R.merge_start + R.merge_end) / 2 : M.L / 2;
+let viewW = 600, selected = null;
+const scrub = document.getElementById("scrub"); scrub.max = TMAX;
+
+// ---------- vehicle pose at time t (interpolated between 1-s records)
+function pose(v, fr, a) {
+  const rel = fr - v.f0;
+  if (rel < 0 || rel >= v.xs.length) return null;
+  const last = rel === v.xs.length - 1;
+  const x = last ? v.xs[rel] + v.vs[rel] * a * FDT : v.xs[rel] + (v.xs[rel + 1] - v.xs[rel]) * a;
+  const spd = last ? v.vs[rel] : v.vs[rel] + (v.vs[rel + 1] - v.vs[rel]) * a;
+  // lane blend: 0 = ramp/accel lane, 1 = mainline (smooth sideways move during the merge frame)
+  let m;
+  if (v.mrel < 0) m = 0;
+  else if (rel >= v.mrel) m = 1;
+  else if (rel === v.mrel - 1) m = a;
+  else m = 0;
+  return { x, spd, m };
+}
+
+// ---------- geometry for a view: x (m) -> screen
+function makeView(canvas, x0, x1, LW, H) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth;
+  const h = Math.round(LW * 2 + H + 46);
+  const W = Math.round(w * dpr), Hpx = Math.round(h * dpr);
+  if (canvas.width !== W || canvas.height !== Hpx) { canvas.style.height = h + "px"; canvas.width = W; canvas.height = Hpx; }
+  const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const k = w / (x1 - x0);
+  const yM = 22 + LW / 2, yA = yM + LW;
+  const sx = x => (x - x0) * k;
+  const rampY = x => yA + H * (R.merge_start - x) / R.approach;   // along the approach (and beyond, for queue)
+  const yOf = (x, m) => { const yr = (!R || x >= R.merge_start) ? yA : rampY(x); return yr + (yM - yr) * m; };
+  return { ctx, w, h, k, x0, x1, LW, H, yM, yA, sx, rampY, yOf };
+}
+
+function drawRoad(V, detail) {
+  const { ctx, w, h, LW, yM, yA, sx, rampY } = V;
+  ctx.fillStyle = css("--grass"); ctx.fillRect(0, 0, w, h);
+  ctx.lineCap = "butt";
+  // mainline
+  ctx.fillStyle = css("--asphalt");
+  ctx.fillRect(sx(0), yM - LW / 2, sx(M.L) - sx(0), LW);
+  if (R) {
+    // approach ramp (as a thick polyline) and the queue storage stub beyond the entrance
+    ctx.strokeStyle = css("--asphalt"); ctx.lineWidth = LW;
+    ctx.beginPath(); ctx.moveTo(sx(R.entrance), rampY(R.entrance)); ctx.lineTo(sx(R.merge_start), yA); ctx.stroke();
+    ctx.globalAlpha = 0.35; ctx.setLineDash([LW * 0.6, LW * 0.4]);
+    const qEnd = R.entrance - Math.max(60, QSP * 12);
+    ctx.beginPath(); ctx.moveTo(sx(qEnd), rampY(qEnd)); ctx.lineTo(sx(R.entrance), rampY(R.entrance)); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    // acceleration lane with a short taper to the lane end
+    const tap = Math.min(40, (R.merge_end - R.merge_start) / 3);
+    ctx.fillStyle = css("--asphalt");
+    ctx.beginPath();
+    ctx.moveTo(sx(R.merge_start), yA - LW / 2); ctx.lineTo(sx(R.merge_end), yA - LW / 2);
+    ctx.lineTo(sx(R.merge_end), yA - LW / 2 + 1);
+    ctx.lineTo(sx(R.merge_end - tap), yA + LW / 2); ctx.lineTo(sx(R.merge_start), yA + LW / 2);
+    ctx.closePath(); ctx.fill();
+  }
+  // markings
+  ctx.strokeStyle = css("--marking"); ctx.lineWidth = detail ? 1.5 : 1;
+  ctx.beginPath(); ctx.moveTo(sx(0), yM - LW / 2); ctx.lineTo(sx(M.L), yM - LW / 2); ctx.stroke();
+  if (R) {
+    ctx.beginPath(); ctx.moveTo(sx(0), yM + LW / 2); ctx.lineTo(sx(R.merge_start), yM + LW / 2);
+    ctx.moveTo(sx(R.merge_end), yM + LW / 2); ctx.lineTo(sx(M.L), yM + LW / 2); ctx.stroke();
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.moveTo(sx(R.merge_start), yM + LW / 2); ctx.lineTo(sx(R.merge_end), yM + LW / 2); ctx.stroke();
+    ctx.setLineDash([]);
+    // ramp entrance stop line + signal head (no control yet: always green)
+    const ex = sx(R.entrance), ey = rampY(R.entrance);
+    ctx.strokeStyle = css("--marking"); ctx.lineWidth = detail ? 3 : 2;
+    ctx.beginPath(); ctx.moveTo(ex, ey - LW / 2); ctx.lineTo(ex, ey + LW / 2); ctx.stroke();
+    const r = detail ? 6 : 3.5;
+    ctx.fillStyle = "#222"; ctx.fillRect(ex - r - 2, ey + LW / 2 + 3, 2 * r + 4, 2 * r + 4);
+    ctx.fillStyle = "#29c463"; ctx.beginPath(); ctx.arc(ex, ey + LW / 2 + 5 + r, r, 0, 7); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.moveTo(sx(0), yM + LW / 2); ctx.lineTo(sx(M.L), yM + LW / 2); ctx.stroke();
+  }
+  // labels
+  ctx.fillStyle = css("--muted"); ctx.font = `${detail ? 12 : 11}px system-ui, sans-serif`;
+  ctx.textBaseline = "alphabetic";
+  const label = (txt, x, y, align = "center") => {
+    const X = sx(x); if (X < -80 || X > w + 80) return;
+    ctx.textAlign = align; ctx.fillText(txt, Math.max(4, Math.min(w - 4, X)), y);
+  };
+  label("entrance (x = 0)", 0, 14, "left");
+  label(`exit (x = ${M.L} m)`, M.L, 14, "right");
+  if (R) {
+    label("merge start", R.merge_start, 14);
+    label("lane end", R.merge_end, 14);
+    if (detail) {
+      const ex = sx(R.entrance), ey = rampY(R.entrance);
+      if (ex > -40 && ex < w + 40) { ctx.textAlign = "left"; ctx.fillText("ramp entrance (meter site, no control)", ex + 12, ey + LW / 2 + 16); }
+    }
+  }
+}
+
+function car(V, x, y, ang, len, wid, fill, rampOrigin, sel) {
+  const { ctx } = V;
+  ctx.save(); ctx.translate(V.sx(x), y); ctx.rotate(ang);
+  ctx.fillStyle = fill;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(-len, -wid / 2, len, wid, Math.min(2, wid / 3)); else ctx.rect(-len, -wid / 2, len, wid);
+  ctx.fill();
+  if (rampOrigin && len > 3) { ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, wid * 0.16); ctx.stroke(); }
+  if (sel) { ctx.strokeStyle = css("--sel"); ctx.lineWidth = 2.5; ctx.beginPath();
+    ctx.arc(-len / 2, 0, Math.max(len, wid) * 0.75 + 4, 0, 7); ctx.stroke(); }
+  ctx.restore();
+}
+
+function drawVehicles(V, fr, a, detail, collect) {
+  const { k, LW, yM, yA, H, x0, x1 } = V;
+  const len = Math.max(detail ? 3 : 2, M.veh_len * k), wid = LW * (detail ? 0.56 : 0.62);
+  const rampAng = R ? Math.atan2(-H, R.approach * k) : 0;
+  const pad = M.veh_len + 5;
+  let n = 0, sum = 0;
+  for (const v of VEH) {
+    const P = pose(v, fr, a); if (!P) continue;
+    if (P.m >= 1) { n++; sum += P.spd; }
+    if (P.x < x0 - pad || P.x > x1 + pad + (R ? R.approach : 0)) continue;
+    const y = V.yOf(P.x, P.m);
+    let ang = 0;
+    if (P.m === 0 && R && P.x < R.merge_start) ang = rampAng;
+    else if (P.m > 0 && P.m < 1) ang = Math.atan2(yM - yA, Math.max(1, (v.vs[fr - v.f0] || 1) * FDT * k));
+    car(V, P.x, y, ang, len, wid, speedColor(P.spd), v.ramp, detail && selected === v.id);
+    if (collect) collect.push({ id: v.id, X: V.sx(P.x) - len / 2, Y: y });
+  }
+  // point queues (display only)
+  const qc = css("--queue"), fi = Math.min(NF - 1, fr);
+  const qm = C.qm[fi], qr = C.qr[fi], maxDraw = 80;
+  for (let i = 0; i < Math.min(qm, maxDraw); i++) { const x = -QSP * (i + 0.2); if (x < x0 - pad) break; car(V, x, yM, 0, len, wid, qc, false, false); }
+  if (R) for (let i = 0; i < Math.min(qr, maxDraw); i++) {
+    const x = R.entrance - QSP * (i + 0.2); if (x < x0 - pad - R.approach) break;
+    car(V, x, V.rampY(x), rampAng, len, wid, qc, true, false);
+  }
+  if (detail) {
+    const { ctx } = V; ctx.fillStyle = css("--ink"); ctx.font = "600 12px system-ui, sans-serif";
+    if (qm > 0 && V.sx(0) > 0 && V.sx(0) < V.w) { ctx.textAlign = "right"; ctx.fillText(`entry queue ${qm}`, V.sx(0) - 6, yM + LW + 6); }
+    if (R && qr > 0) { const ex = V.sx(R.entrance), ey = V.rampY(R.entrance);
+      if (ex > 0 && ex < V.w + 200) { ctx.textAlign = "right"; ctx.fillText(`ramp queue ${qr}`, Math.min(V.w - 4, ex - 14), ey - LW); } }
+  }
+  return { n, mean: n ? sum / n : NaN };
+}
+
+// ---------- render
+const ovC = document.getElementById("overview"), cuC = document.getElementById("closeup");
+let hit = [];
+function render() {
+  const fr = Math.floor(t / FDT), a = t / FDT - fr;
+  if (selected !== null && document.getElementById("follow").checked) {
+    const v = byId.get(selected), P = v && pose(v, fr, a); if (P) center = P.x;
+  }
+  center = Math.max(-100, Math.min(M.L + 100, center));
+  // overview
+  const pad = R ? Math.max(80, R.approach * 0.25) : 60;
+  const OV = makeView(ovC, -pad, M.L + 40, 9, R ? 26 : 0);
+  drawRoad(OV, false);
+  const agg = drawVehicles(OV, fr, a, false, null);
+  const c0 = OV.sx(center - viewW / 2), c1 = OV.sx(center + viewW / 2);
+  OV.ctx.strokeStyle = css("--accent"); OV.ctx.lineWidth = 2;
+  OV.ctx.strokeRect(c0, 4, c1 - c0, OV.h - 8);
+  // close-up
+  const CU = makeView(cuC, center - viewW / 2, center + viewW / 2, 26, R ? 120 : 0);
+  drawRoad(CU, true);
+  hit = []; drawVehicles(CU, fr, a, true, hit);
+  // readouts
+  const fi = Math.min(NF - 1, fr);
+  document.getElementById("time").textContent = fmtT(t);
+  scrub.value = t;
+  document.getElementById("stats").innerHTML = [
+    ["time", `${fmtT(t)} (${t.toFixed(0)} s)`], ["on mainline", C.onm[fi]], ["on ramp / accel lane", C.onr[fi]],
+    ["ramp queue (waiting)", C.qr[fi]], ["mainline entry queue", C.qm[fi]], ["arrived / exited", `${C.arrived[fi]} / ${C.exited[fi]}`],
+    ["mean mainline speed", isNaN(agg.mean) ? "–" : `${(agg.mean * MPH).toFixed(1)} mph`],
+  ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  renderInfo(fr, a);
+}
+
+function renderInfo(fr, a) {
+  const el = document.getElementById("info");
+  if (selected === null) return;
+  const v = byId.get(selected), P = pose(v, fr, a);
+  const f = s => s === null ? "–" : `${s.toFixed(1)} s (${fmtT(s)})`;
+  const [arr, ent, mer, ex] = v.t;
+  const where = !P ? (t < (ent ?? Infinity) ? "waiting in queue / not yet arrived" : "exited")
+    : P.m >= 1 ? "mainline" : (R && P.x >= R.merge_start ? "acceleration lane" : "ramp approach");
+  el.className = "";
+  el.innerHTML = `<table>
+    <tr><td>vehicle id</td><td>${v.id} (${v.ramp ? "ramp" : "mainline"} origin)</td></tr>
+    <tr><td>now</td><td>${where}${P ? ` · x = ${P.x.toFixed(1)} m · ${(P.spd * MPH).toFixed(1)} mph` : ""}</td></tr>
+    <tr><td>arrived</td><td>${f(arr)}</td></tr>
+    <tr><td>entered road</td><td>${f(ent)}${ent !== null && arr !== null ? ` · waited ${(ent - arr).toFixed(1)} s` : ""}</td></tr>
+    <tr><td>merged</td><td>${v.ramp ? f(mer) : "n/a"}</td></tr>
+    <tr><td>exited</td><td>${f(ex)}${ex !== null && arr !== null ? ` · travel time ${(ex - arr).toFixed(1)} s` : ""}</td></tr>
+  </table>`;
+}
+
+// ---------- interaction
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (playing) { t += dt * speed; if (t >= TMAX) { t = TMAX; setPlaying(false); } }
+  render();
+  requestAnimationFrame(loop);
+}
+function setPlaying(p) { playing = p; document.getElementById("play").textContent = p ? "Pause" : "Play"; }
+document.getElementById("play").onclick = () => { if (!playing && t >= TMAX) t = 0; setPlaying(!playing); };
+scrub.oninput = () => { t = +scrub.value; };
+document.getElementById("speed").onchange = e => { speed = +e.target.value; };
+document.getElementById("zoom").onchange = e => { viewW = +e.target.value; };
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.target.type === "range") return;
+  if (e.code === "Space") { e.preventDefault(); setPlaying(!playing); }
+  if (e.code === "ArrowRight") t = Math.min(TMAX, t + FDT * 5);
+  if (e.code === "ArrowLeft") t = Math.max(0, t - FDT * 5);
+});
+ovC.addEventListener("pointerdown", e => {
+  const r = ovC.getBoundingClientRect(), pad = R ? Math.max(80, R.approach * 0.25) : 60;
+  const x0 = -pad, x1 = M.L + 40; center = x0 + (e.clientX - r.left) / r.width * (x1 - x0);
+  document.getElementById("follow").checked = false;
+});
+let drag = null;
+cuC.addEventListener("pointerdown", e => { drag = { x: e.clientX, c: center, moved: false }; cuC.setPointerCapture(e.pointerId); });
+cuC.addEventListener("pointermove", e => {
+  if (!drag) return; const dx = e.clientX - drag.x;
+  if (Math.abs(dx) > 3) { drag.moved = true; cuC.classList.add("dragging"); document.getElementById("follow").checked = false; }
+  if (drag.moved) center = drag.c - dx / cuC.clientWidth * viewW;
+});
+cuC.addEventListener("pointerup", e => {
+  if (drag && !drag.moved) {
+    const r = cuC.getBoundingClientRect(), X = e.clientX - r.left, Y = e.clientY - r.top;
+    let best = null, bd = 16;
+    for (const h of hit) { const d = Math.hypot(h.X - X, h.Y - Y); if (d < bd) { bd = d; best = h.id; } }
+    selected = best;
+    if (best === null) { const el = document.getElementById("info"); el.className = "hint"; el.textContent = "Click a car in the close-up."; }
+  }
+  drag = null; cuC.classList.remove("dragging");
+});
+// deep link: viewer.html#t=1200&zoom=300&x=1600 opens at that time / width / position
+for (const [k, v] of new URLSearchParams(location.hash.slice(1))) {
+  if (k === "t") t = Math.max(0, Math.min(TMAX, +v || 0));
+  if (k === "zoom") { viewW = +v || viewW; document.getElementById("zoom").value = String(viewW); }
+  if (k === "x") center = +v;
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

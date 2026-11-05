@@ -11,3 +11,7 @@
 | Equilibrium gap / flow | s_e(v) = (s0+vT)/sqrt(1-(v/v0)^delta); q_e = v/(s_e+l) | Treiber & Kesting 2013, Ch. 11 (set dv/dt = 0, dv = 0) | src/tmc/idm.py: equilibrium_gap, capacity | q_c computed numerically, never copied |
 | Entry (insertion) rule | enter if gap >= s0 + v_last*T, at v_last | Design choice. Bounds the entering vehicle's deceleration by a | src/tmc/network.py: _try_insert | Verified: saturated discharge ~ q_c |
 | Arrivals | Poisson / uniform, piecewise-constant demand | Lecture notes (queueing); config seed | src/tmc/network.py: generate_arrivals | |
+| Merge (safety) | merge if gaps > 0 and acc(merging), acc(new follower) >= -b_safe, b_safe = 4 m/s^2 | Kesting, Treiber & Helbing 2007 (MOBIL); Treiber & Kesting 2013 Ch. 14 | src/tmc/network.py: _merges | Mandatory change: incentive term not used |
+| Lane-end stop | brake at v^2/(2d) once that reaches b; stop 1 m before lane end | Design choice (kinematics), replaces the IDM obstacle (see E1 correction) | src/tmc/network.py: _ramp_accelerations | |
+| Cooperative yielding (optional) | follower treats the ramp vehicle as a leader if the IDM response is >= -b | Hidas 2005, Transp. Res. C 13(1) | src/tmc/network.py: _yield | Off by default; provisional |
+| Speed adaptation (optional) | ramp vehicle follows the adjacent mainline leader, braking capped at b | Design choice | src/tmc/network.py: _ramp_accelerations | Off by default; provisional |

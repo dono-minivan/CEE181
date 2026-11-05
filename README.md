@@ -19,14 +19,21 @@ Reproducible run command (single-lane IDM baseline, scenario `configs/scenario_s
 
 It prints a summary and writes `results/S0_single_lane_time_space.png`, `..._counts.png`, and `..._vehicles.csv`. Pass another scenario YAML path as an argument to run it. Module examples: `python -m tmc.idm` prints computed capacity.
 
+Animated viewer (mainline, on-ramp, queues; vehicles colored by speed; click a car to trace it):
+
+    python -m tmc.viz --open                                  # on-ramp scenario S1
+    python -m tmc.viz configs/scenario_s0_single_lane.yaml --open
+
+This writes `results/<scenario_id>_viewer.html`, a self-contained file. Add `#t=1200&zoom=300&x=1600` to the URL to open at a given time, width, and position.
+
 ## Tests
     pytest
 
 ## Status
-Single-lane IDM simulator with entry queue and free exit, verified by 17 tests (see `docs/design_record.md` section 4). Not yet built: on-ramp merge/bottleneck, detectors, estimation/forecast, controllers.
+IDM mainline with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1). Verified by 34 tests (see `docs/design_record.md` section 4). Animated viewer available. Not yet built: detectors, estimation/forecast, controllers.
 
 ## Known limitations
-- Single lane, no lane changing, no on-ramp yet.
+- Single mainline lane, no lane changing. The merge discharges ~1430-1490 veh/h, below q_c (provisional, under review).
 - Deterministic IDM drivers (no reaction time or noise). Randomness comes only from arrivals.
 - The entrance discharges at most about q_c. Mainline demand above that queues at the entrance.
 

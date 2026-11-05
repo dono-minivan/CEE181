@@ -1,0 +1,34 @@
+# S1: mainline + unmetered on-ramp (no control). First merge-bottleneck scenario.
+scenario_id: S1_onramp_nocontrol
+demand_id: D1_peak_X103          # peak X = (1300 + 500) / q_c(1742) ~= 1.03
+param_set: baseline
+seed: 181                        # ramp stream uses seed + 1000
+road:
+  length_m: 3000.0
+  lane_id: 0
+sim:
+  dt_s: 0.1
+  record_every_s: 1.0
+  max_time_s: 7200.0
+arrivals:                        # mainline, at x = 0
+  process: poisson
+  profile:                       # [start_s, end_s, flow_veh_per_h]
+    - [0, 600, 1300]
+    - [600, 1500, 1300]
+    - [1500, 2400, 900]
+ramp:
+  merge_start_m: 1500.0          # acceleration lane start
+  merge_end_m: 1750.0            # 250 m acceleration lane, ends in a standing obstacle
+  approach_length_m: 250.0       # ramp entrance (stop line / future meter) to merge_start
+  b_safe_mps2: 4.0               # MOBIL safe-braking limit
+  # Merge-behavior switches (PROVISIONAL, see docs/experiment_log.md E1):
+  cooperative_yield: false       # mainline follower brakes (<= b) to let a ramp vehicle in
+  yield_min_speed_ratio: 0.0     # ...only if v_ramp >= ratio * v_follower
+  speed_adaptation: false        # ramp vehicle also follows the adjacent mainline leader
+  lane_end_decel_mps2: null      # braking rate that triggers the lane-end stop (null -> IDM b)
+  arrivals:
+    process: poisson
+    profile:
+      - [0, 600, 300]
+      - [600, 1500, 500]
+      - [1500, 2400, 200]

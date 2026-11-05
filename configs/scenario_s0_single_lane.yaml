@@ -1,0 +1,18 @@
+# S0: single-lane baseline (no merge, no control). Purpose: verify IDM + boundaries before adding the ramp.
+scenario_id: S0_single_lane
+demand_id: D0_step_over_capacity   # middle period deliberately exceeds q_c to exercise the entry queue
+param_set: baseline                # key in configs/idm_baseline.yaml
+seed: 181
+road:
+  length_m: 3000.0
+  lane_id: 0
+sim:
+  dt_s: 0.1
+  record_every_s: 1.0
+  max_time_s: 7200.0               # hard stop; if vehicles remain they are reported, never dropped
+arrivals:
+  process: poisson                 # poisson | uniform
+  profile:                         # [start_s, end_s, flow_veh_per_h]
+    - [0, 900, 1200]
+    - [900, 1500, 2000]
+    - [1500, 2400, 800]

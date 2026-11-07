@@ -24,7 +24,8 @@ class Observation:
     interval_end_s: float
     count: int
     mean_speed_mps: Optional[float]  # None when not measurable
-    quality_flag: str = "ok"         # e.g. ok, missing, delayed, noisy
+    quality_flag: str = "ok"         # e.g. ok, partial, missing, delayed, noisy
+    occupancy: Optional[float] = None  # fraction of the interval the detector was occupied; None if not a loop
 
 
 @dataclass(frozen=True)

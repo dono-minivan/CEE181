@@ -17,7 +17,7 @@ Reproducible run command (single-lane IDM baseline, scenario `configs/scenario_s
 
     python -m tmc.example
 
-It prints a summary and writes `results/S0_single_lane_time_space.png`, `..._counts.png`, and `..._vehicles.csv`. Pass another scenario YAML path as an argument to run it. Module examples: `python -m tmc.idm` prints computed capacity.
+It prints a summary and writes `results/S0_single_lane_time_space.png`, `..._counts.png`, and `..._vehicles.csv`. Pass another scenario YAML path as an argument to run it. Module examples: `python -m tmc.idm` prints computed capacity; `python -m tmc.detectors` runs S1 and prints the virtual detector flows.
 
 Animated viewer (mainline, on-ramp, queues; vehicles colored by speed; click a car to trace it):
 
@@ -31,7 +31,7 @@ This writes `results/<scenario_id>_viewer.html`, a self-contained file. Add `#t=
     pytest
 
 ## Status
-IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Not yet built: detectors, estimation/forecast, controllers.
+IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Virtual detectors (loops, stations, ramp demand counter) with a count audit. Not yet built: estimation/forecast, controllers.
 
 ## Known limitations
 - The on-ramp merge model is provisional. Single lane: the merge discharges ~1430-1490 veh/h, below q_c (E1). Two lanes: the merge deadlocks once a ramp vehicle stops at the lane end (E2); the optional gap-seeking and anticipation fixes reach at most 88% of 2 q_c (E3), so the two-lane option is parked. Not a valid no-control baseline yet.

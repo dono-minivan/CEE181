@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from tmc.detectors import DetectorBank, DetectorSpec
 from tmc.idm import IDMParams, acceleration, ballistic_update, load_params
 
 MAIN, RAMP = 0, -1   # MAIN = rightmost mainline lane; further mainline lanes are 1, 2, ...
@@ -101,6 +102,7 @@ class ScenarioConfig:
     ramp: RampConfig | None = None
     n_lanes: int = 1
     lane_change: LaneChangeConfig = field(default_factory=LaneChangeConfig)
+    detectors: list = field(default_factory=list)   # [DetectorSpec, ...] (tmc.detectors)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ScenarioConfig":
@@ -149,6 +151,7 @@ class ScenarioConfig:
             ramp=ramp,
             n_lanes=int(d["road"].get("n_lanes", 1)),
             lane_change=lane_change,
+            detectors=[DetectorSpec.from_dict(x) for x in (d.get("detectors") or [])],
         )
 
 
@@ -190,6 +193,8 @@ class SimResult:
     cleared: bool                # all scheduled vehicles exited before max_time_s
     lane_changes: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=LC_COLUMNS))
     # lane_changes: one row per lane change, kind = "discretionary" (mainline MOBIL) or "merge" (ramp -> lane 0)
+    observations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # observations: one row per detector interval (interfaces.Observation fields), empty if no detectors
 
     def summary(self) -> dict:
         # Only vehicles that arrived before the run ended; later scheduled arrivals are reported separately.
@@ -325,6 +330,8 @@ class FreewaySegment:
         self.min_gap = np.inf
         self.lc_log: list[tuple] = []
         self.last_arrival = float(max(main_arr.max(initial=0.0), ramp_arr.max(initial=0.0)))
+        # Detectors are passive: they read the state and never change it.
+        self.det = DetectorBank(cfg.detectors, cfg.n_lanes, params.length, cfg.dt_s) if cfg.detectors else None
 
     @property
     def main(self) -> _Lane:
@@ -607,6 +614,7 @@ class FreewaySegment:
         rec_every = max(1, int(round(cfg.record_every_s / dt)))
         max_steps = int(np.ceil(cfg.max_time_s / dt))
         do_lc = cfg.n_lanes >= 2 and self.lc.enabled
+        lane_id_of = {id(ln): i for i, ln in enumerate(self.lanes)}
         traj_rows, count_rows = [], []
         k = 0
         while True:
@@ -617,6 +625,10 @@ class FreewaySegment:
                 while pend and pend[0][0] <= t + 1e-9:
                     self.queue[b].append(pend.popleft()[1])
                     self.n_arrived += 1
+                    if self.det:
+                        self.det.arrival(b)
+            if self.det:
+                self.det.advance(t)   # close intervals ending at t (arrivals up to t belong to them)
             # 2) boundary entries, merges, lane changes (state at t)
             self._enter_mainline(t)
             if self.ramp:
@@ -624,6 +636,10 @@ class FreewaySegment:
                 self._merges(t)
             if do_lc:
                 self._lane_changes(t, self._accelerations()[0])
+            if self.det:
+                states = {i: ln.x for i, ln in enumerate(self.lanes)}
+                states[RAMP] = self.rlane.x
+                self.det.sample(states)
             # 3) accelerations + safety audit
             accs, acc_r, gaps, s_r = self._accelerations()
             finite = np.concatenate([g[np.isfinite(g)] for g in gaps] + [s_r[1:]])
@@ -657,15 +673,20 @@ class FreewaySegment:
             for ln, acc in zip(self.lanes, accs):
                 if len(ln) == 0:
                     continue
-                x_old = ln.x
+                x_old, v_old = ln.x, ln.v
                 ln.x, ln.v = ballistic_update(ln.x, ln.v, acc, dt)
+                if self.det:
+                    self.det.crossings(lane_id_of[id(ln)], x_old, ln.x, v_old, ln.v)
                 out = ln.x > cfg.length_m
                 if np.any(out):
                     frac = (cfg.length_m - x_old[out]) / (ln.x[out] - x_old[out])
                     self.exit_s[ln.ids[out]] = t + frac * dt
                     ln.remove(out)
             if len(self.rlane):
+                x_old, v_old = self.rlane.x, self.rlane.v
                 self.rlane.x, self.rlane.v = ballistic_update(self.rlane.x, self.rlane.v, acc_r, dt)
+                if self.det:
+                    self.det.crossings(RAMP, x_old, self.rlane.x, v_old, self.rlane.v)
             k += 1
 
         end_t = k * dt
@@ -683,7 +704,11 @@ class FreewaySegment:
         traj = pd.concat(traj_rows, ignore_index=True) if traj_rows else pd.DataFrame(
             columns=["time_s", "vehicle_id", "lane_id", "position_m", "speed_mps", "acceleration_mps2"])
         cleared = bool(np.isfinite(self.exit_s).all())  # False also if the time limit cut off demand
-        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc)
+        obs = pd.DataFrame()
+        if self.det:
+            self.det.finish(end_t)
+            obs = self.det.to_frame()
+        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc, obs)
 
 
 SingleLaneSegment = FreewaySegment  # backward-compatible name: a segment with no ramp configured

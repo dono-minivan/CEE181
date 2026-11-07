@@ -32,3 +32,12 @@ ramp:
       - [0, 600, 300]
       - [600, 1500, 500]
       - [1500, 2400, 200]
+# Virtual detectors (tmc.detectors). Controllers may read ONLY these (CLAUDE.md rule 2).
+# Same layout in every control mode, so measurement definitions match across comparisons.
+detectors:
+  - {id: M_up,   kind: loop, position_m: 1200.0, lane_id: 0, interval_s: 30}  # mainline upstream of the merge
+  - {id: M_down, kind: loop, position_m: 1900.0, lane_id: 0, interval_s: 30}  # 150 m past merge_end (ALINEA site)
+  - {id: M_exit, kind: loop, position_m: 3000.0, lane_id: 0, interval_s: 30}  # downstream boundary
+  - {id: R_dem,  kind: arrivals, boundary: ramp, interval_s: 30}                 # ramp demand (joins the queue)
+  - {id: R_pass, kind: loop, position_m: 1260.0, lane_id: -1, interval_s: 30}    # 10 m past the ramp stop line
+  - {id: R_merge, kind: loop, position_m: 1500.0, lane_id: -1, interval_s: 30}   # acceleration-lane start

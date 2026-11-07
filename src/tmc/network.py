@@ -63,6 +63,11 @@ class RampConfig:
     yield_min_speed_ratio: float = 0.0   # yield only if v_ramp >= ratio * v_follower (0 = always eligible)
     lane_end_decel_mps2: float | None = None  # braking rate that triggers the lane-end stop (None -> IDM b)
     speed_adaptation: bool = False       # in the merge zone, also follow the adjacent mainline leader
+    gap_seeking: bool = False            # in the merge zone, steer toward the center of an adjacent lane-0 gap
+    gap_kx: float = 0.1                  # gap-seeking position gain, 1/s^2
+    gap_kv: float = 0.6                  # gap-seeking speed gain, 1/s
+    anticipation_m: float = 0.0          # lane-0 drivers from merge_start - this to merge_end count the nearest
+                                         # ramp vehicle ahead as a leader in lane-change decisions (0 = off)
 
     @property
     def entrance_m(self) -> float:
@@ -116,6 +121,10 @@ class ScenarioConfig:
                 yield_min_speed_ratio=float(r.get("yield_min_speed_ratio", 0.0)),
                 lane_end_decel_mps2=r.get("lane_end_decel_mps2"),
                 speed_adaptation=bool(r.get("speed_adaptation", False)),
+                gap_seeking=bool(r.get("gap_seeking", False)),
+                gap_kx=float(r.get("gap_kx", 0.1)),
+                gap_kv=float(r.get("gap_kv", 0.6)),
+                anticipation_m=float(r.get("anticipation_m", 0.0)),
             )
         lc = d.get("lane_change") or {}
         lane_change = LaneChangeConfig(
@@ -416,6 +425,8 @@ class FreewaySegment:
             if not ready.any():
                 continue
             a_c = accs[ia]
+            if ia == MAIN:
+                a_c = np.minimum(a_c, self._ramp_anticipation(A.x, A.v))
             # old follower o = i+1 would follow i-1 (or a free road if i = 0) once i leaves
             da_o = np.zeros(n)
             if n > 1:
@@ -438,6 +449,8 @@ class FreewaySegment:
                 s_l[hl] = B.x[j[hl] - 1] - A.x[hl] - p.length
                 dv_l[hl] = A.v[hl] - B.v[j[hl] - 1]
                 a_c_new = acceleration(A.v, s_l, dv_l, p)
+                if ib == MAIN:
+                    a_c_new = np.minimum(a_c_new, self._ramp_anticipation(A.x, A.v))
                 s_f = np.full(n, np.inf)
                 a_n_new = np.zeros(n)
                 da_n = np.zeros(n)
@@ -467,6 +480,52 @@ class FreewaySegment:
             moved.add(vid)
             self.lc_log.append((t, vid, ia, ib, x, v, "discretionary"))
 
+    def _ramp_anticipation(self, x: np.ndarray, v: np.ndarray) -> np.ndarray:
+        """Perceived lane-0 acceleration limit from ramp traffic, for lane-change decisions only.
+        A lane-0 position in [merge_start - anticipation_m, merge_end] counts the nearest acceleration-lane
+        vehicle ahead (x_r > x, x_r >= merge_start) as a leader; returns IDM toward it, floored at -b_safe
+        so an overlapping ramp vehicle gives a strong but finite incentive. +inf where it does not apply."""
+        out = np.full(len(x), np.inf)
+        rc = self.ramp
+        if rc is None or rc.anticipation_m <= 0 or len(self.rlane) == 0 or len(x) == 0:
+            return out
+        r = self.rlane
+        k = int(np.searchsorted(-r.x, -rc.merge_start_m, side="right"))  # r.x[:k] are in the merge zone
+        if k == 0:
+            return out
+        zx, zv = r.x[:k], r.v[:k]
+        zone = (x >= rc.merge_start_m - rc.anticipation_m) & (x <= rc.merge_end_m)
+        j = np.searchsorted(-zx, -x, side="left") - 1     # nearest merge-zone ramp vehicle with x_r > x
+        h = zone & (j >= 0)
+        if h.any():
+            s = zx[j[h]] - x[h] - self.p.length
+            with np.errstate(invalid="ignore", divide="ignore"):
+                a = np.where(s > 0, acceleration(v[h], np.where(s > 0, s, 1.0), v[h] - zv[j[h]], self.p),
+                             -self.lc.b_safe_mps2)
+            out[h] = np.maximum(a, -self.lc.b_safe_mps2)
+        return out
+
+    def _gap_seeking(self, i: int) -> float | None:
+        """Gap-seeking acceleration for ramp vehicle i in the merge zone: steer front bumper toward the
+        center of the larger of the two adjacent lane-0 gaps (beside it, or the one behind), matching that
+        gap's mean speed. PD law a = kx (x* - x) + kv (v* - v), clipped to [-b, a]. None if no gap exists."""
+        p, r, m, rc = self.p, self.rlane, self.main, self.ramp
+        x, v = r.x[i], r.v[i]
+        j = m.slot(x)                               # m[j-1] ahead, m[j] behind (if present)
+        best = None
+        for lead, fol in ((j - 1, j), (j, j + 1)):
+            if lead < 0 or fol >= len(m):
+                continue
+            size = m.x[lead] - p.length - m.x[fol]
+            if best is None or size > best[0]:
+                best = (size, lead, fol)
+        if best is None:
+            return None
+        _, lead, fol = best
+        x_star = 0.5 * (m.x[lead] + m.x[fol])       # front bumper here centers the car in the gap
+        v_star = 0.5 * (m.v[lead] + m.v[fol])
+        return float(np.clip(rc.gap_kx * (x_star - x) + rc.gap_kv * (v_star - v), -p.b, p.a))
+
     def _ramp_accelerations(self, s_r, dv_r) -> np.ndarray:
         """Ramp-lane accelerations = min of three demands:
         (1) IDM toward the ramp leader;
@@ -491,6 +550,13 @@ class FreewaySegment:
             b_req = v * v / (2 * d)
             if b_req >= (rc.lane_end_decel_mps2 or p.b):
                 acc[0] = min(acc[0], -b_req)
+        # (3b) gap seeking (replaces speed adaptation when on): still never above IDM / lane-end limits
+        if rc.gap_seeking:
+            for i in np.flatnonzero(r.x >= rc.merge_start_m):
+                a_g = self._gap_seeking(int(i))
+                if a_g is not None:
+                    acc[i] = min(acc[i], a_g)
+            return acc
         # (3) adapt to the lane-0 vehicle just ahead
         if not rc.speed_adaptation:
             return acc

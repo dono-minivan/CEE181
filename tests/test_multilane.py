@@ -30,10 +30,16 @@ def slow_leader_case(**lc_kw):
                lane_change=LaneChangeConfig(**lc_kw))
 
 
-@pytest.fixture(scope="module")
-def busy():
-    """Two lanes + ramp with cooperative yielding: produces many lane changes and merges."""
-    ramp = RampConfig(600.0, 800.0, 200.0, [[0, 300, 600]], cooperative_yield=True)
+BUSY_VARIANTS = {
+    "yield": {"cooperative_yield": True},
+    "gap+antic": {"gap_seeking": True, "anticipation_m": 200.0},   # E3 merge fixes
+}
+
+
+@pytest.fixture(scope="module", params=list(BUSY_VARIANTS))
+def busy(request):
+    """Two lanes + ramp: produces many lane changes and merges. Every check runs under each variant."""
+    ramp = RampConfig(600.0, 800.0, 200.0, [[0, 300, 600]], **BUSY_VARIANTS[request.param])
     return run(profile=((0, 300, 2600),), ramp=ramp)
 
 

@@ -48,3 +48,22 @@ The animated viewer (`python -m tmc.viz`) showed ramp vehicles stopped bumper-to
 
 S2 itself: 1995 vehicles (435 ramp), all merged and exited, cleared at 2903 s. TTT 190.2 veh*h, of which ramp-queue wait 94.0. Peak ramp queue 271. 814 discretionary lane changes; median 0 per vehicle, max 12. The heavy changers (15 vehicles) hop lanes at ~2 mph in the queue beside the stalled ramp. Min gap 0.79 m.
 - **Interpretation:** The lane-change mechanics verify (tests/test_multilane.py), but the second lane does not fix the merge. Mechanism: ramp merges stop entirely after ~600 s while both mainline lanes run at 61 mph. The first ramp vehicle that fails to find a gap brakes to the lane end. Stopped, it needs a ~165 m gap to keep a 28 m/s lane-0 follower within b_safe, and lane-0 spacing at 1300 veh/h is ~76 m. Lane-0 drivers have no reason to move left, because ramp vehicles do not enter their MOBIL accelerations. Unrestricted yielding gives them that reason, but then they yield to stopped ramp vehicles and the mainline collapses. Contributing causes: (a) the lane-end trigger b = 1.67 m/s^2 means braking starts ~230 m before the end at 28 m/s, i.e. almost the whole 250 m acceleration lane; (b) a ramp vehicle at mainline speed stays beside the same car (no relative speed to sweep gaps). Conclusion: the merge model, not the lane count, is the binding problem. The "no-signal" baseline is not credible until it is fixed. Decision pending, see design record section 2.
+
+## E3 | 2026-11-07 | Merge fixes on two lanes: gap seeking + anticipatory lane changes
+- **Prediction (written before running):** Gap seeking alone stops the lane-end deadlock at X = 0.92, but some ramp vehicles still stop in heavier traffic. Anticipation alone helps less: it opens gaps only for drivers already in the zone, and it can't fix ramp vehicles traveling at the same speed as the mainline. Both together should deliver nearly all ramp demand at X = 0.92 (outflow ~3200 veh/h, no stops). At X = 1.03, outflow should be about 3300-3400, with congestion upstream of the merge.
+- **Change:** Two `RampConfig` switches, both off by default (S1 and S2 results unchanged: TTT 67.87 and 190.17 veh*h).
+  - `gap_seeking`: in the merge zone, a ramp vehicle steers its front bumper toward the center of the larger adjacent lane-0 gap, with a = kx (x* - x) + kv (v* - v), kx = 0.1 s^-2, kv = 0.6 s^-1, clipped to [-b, a]. It is never above the IDM and lane-end limits.
+  - `anticipation_m`: lane-0 drivers from merge_start - anticipation_m to merge_end count the nearest merge-zone ramp vehicle ahead as a leader in lane-change decisions only (not in driving). The same applies to lane-1 drivers judging a move into lane 0.
+- **Result:** Same scan as E2 (steady 1800 s, seed 181, mainline 2600 veh/h, ramp 600 / 1000). Columns: exit flow over 600-1800 s / ramp merges per hour / mean mainline speed at 1000-1500 m / TTT veh*h.
+
+| Variant (2 lanes) | X = 0.92 | X = 1.03 |
+|---|---|---|
+| plain (E2 baseline) | 2736 / 0 / 61.5 / 120.2 | 2736 / 0 / 61.5 / 210.0 |
+| gap seeking | 2739 / 0 / 61.5 / 111.3 | 2757 / 0 / 61.5 / 178.4 |
+| anticipation 200 m | 3072 / 492 / 33.7 / 71.5 | 2724 / 657 / 10.3 / 163.6 |
+| gap + anticipation 200 m | 2913 / 354 / 22.9 / 85.9 | 2922 / 486 / 16.6 / 146.7 |
+| gap + anticipation 400 m | 2907 / 489 / 19.0 / 85.6 | 2937 / 396 / 22.1 / 141.3 |
+| gap + anticipation 200 m + lane-end trigger 3 m/s^2 | 3084 / 450 / 37.4 / 67.5 | 2883 / 384 / 16.1 / 150.9 |
+
+Single lane (S1 demand) for comparison: gap seeking changes outflow by < 3% (1473 vs 1434 at X = 0.92, 1449 vs 1464 at X = 1.03), and anticipation has no effect (no lane to move to). Min mainline speed is 0 in every run.
+- **Interpretation:** The prediction failed on mechanism and on size. Gap seeking alone does almost nothing: the deadlock is a stopped vehicle at the lane end, and no gap the PD law aims for is ever big enough for it. Anticipation is what breaks the deadlock, because right-lane drivers now move left, but it moves the breakdown onto the mainline: upstream speed falls to 20-37 mph already at X = 0.92. The best variant discharges 3084 veh/h (88% of 2 q_c). Every variant breaks down below capacity, so the two-lane merge is still not a credible no-control baseline. **Decision (team, 2026-11-07):** stop tuning the two-lane merge. Keep the code and switches (verified, off by default) and move on to the other merge-model options (design record section 2: (b) recalibrate the single-lane merge, (c) define X against the measured merge capacity).

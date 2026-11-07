@@ -31,10 +31,10 @@ This writes `results/<scenario_id>_viewer.html`, a self-contained file. Add `#t=
     pytest
 
 ## Status
-IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 45 tests (see `docs/design_record.md` section 4). Animated viewer available. Not yet built: detectors, estimation/forecast, controllers.
+IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Not yet built: detectors, estimation/forecast, controllers.
 
 ## Known limitations
-- The on-ramp merge model is provisional. Single lane: the merge discharges ~1430-1490 veh/h, below q_c (E1). Two lanes: the merge deadlocks once a ramp vehicle stops at the lane end (E2). Not a valid no-control baseline yet.
+- The on-ramp merge model is provisional. Single lane: the merge discharges ~1430-1490 veh/h, below q_c (E1). Two lanes: the merge deadlocks once a ramp vehicle stops at the lane end (E2); the optional gap-seeking and anticipation fixes reach at most 88% of 2 q_c (E3), so the two-lane option is parked. Not a valid no-control baseline yet.
 - Lane changes are instantaneous (no lateral motion). MOBIL parameters are still to be verified against the primary source.
 - Deterministic IDM drivers (no reaction time or noise). Randomness comes only from arrivals.
 - The entrance discharges at most about q_c. Mainline demand above that queues at the entrance.

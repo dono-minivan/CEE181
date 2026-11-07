@@ -1,29 +1,36 @@
-"""Freeway segment: mainline lane + optional on-ramp with acceleration lane (merge bottleneck).
+"""Freeway segment: 1+ mainline lanes, optional lane changing, optional on-ramp with acceleration lane.
 
-    mainline arrivals -> entry queue -> mainline lane (x = 0 .. L) -> free exit at x = L
+    mainline arrivals -> entry queue -> mainline lanes (x = 0 .. L) -> free exit at x = L
     ramp arrivals -> ramp queue -> ramp entrance (stop line, future meter) -> approach -> acceleration lane
-                  -> merge into the mainline when safe
+                  -> merge into the right mainline lane (lane 0) when safe
 
 Design choices (each traced in docs/source_to_design.md):
   * Arrivals: piecewise-constant demand, Poisson (seeded) or uniform headways. Mainline and ramp use
     independent random streams (ramp seed = seed + 1000 unless set explicitly).
-  * Entry rule (mainline entrance and ramp entrance alike): a queued vehicle enters when the gap to
-    the last vehicle on that lane is at least s0 + v_ins*T, at v_ins = that vehicle's speed (v0 if the
-    lane is empty). Vehicles that cannot enter WAIT in a point queue; they are never dropped.
+  * Entry rule (mainline entrance and ramp entrance alike): a queued vehicle enters a lane when the gap
+    to the last vehicle on that lane is at least s0 + v_ins*T, at v_ins = that vehicle's speed (v0 if the
+    lane is empty). With several mainline lanes, the one queue feeds every lane that passes this test,
+    largest gap first (ties -> rightmost lane), at most one vehicle per lane per step. Vehicles that
+    cannot enter WAIT in a point queue; they are never dropped.
+  * Lane changing (n_lanes >= 2): symmetric MOBIL (Kesting, Treiber & Helbing 2007), no keep-right bias.
+    Safety: gaps > 0, and the changer and its new follower decelerate no harder than b_safe. Incentive:
+    a_c_new - a_c + p * (da_new_follower + da_old_follower) > threshold. Decisions use the state at t;
+    candidates are applied largest-gain first, each re-checked for safety against the lanes as already
+    updated in this step. A cooldown (min time between changes of one vehicle) prevents ping-pong.
+    Lane changes are instantaneous (no lateral motion), a stated limitation.
   * Ramp geometry: ramp positions use the mainline x axis. The ramp entrance is at
     x = merge_start - approach_length. The acceleration lane runs merge_start .. merge_end.
   * Acceleration-lane driving (FreewaySegment._ramp_accelerations): IDM toward the ramp leader and a
     kinematic lane-end stop (brake only once v^2/(2d) >= b). Optional (config, default off): IDM speed
     adaptation to the adjacent mainline leader, and cooperative yielding by the mainline follower.
-    PROVISIONAL: the merge capacity this produces (~1430-1470 veh/h) is below q_c; see experiment log E1.
-  * Merge rule (MOBIL safety criterion, mandatory lane change, Kesting-Treiber-Helbing 2007): a ramp
-    vehicle with x >= merge_start merges if, at its position, the gap to the mainline leader and
-    follower is > 0 and neither the merging vehicle nor its new follower would need to decelerate
-    harder than b_safe. Ramp vehicles are checked downstream-first; each merge is seen by the next check.
+  * Merge rule (MOBIL safety criterion, mandatory lane change): a ramp vehicle with x >= merge_start
+    merges into lane 0 if the same safety test as above holds (with the ramp's b_safe). Ramp vehicles
+    are checked downstream-first; each merge is seen by the next check.
   * Downstream boundary: free exit; exit time interpolated within the step.
   * Simultaneous update: accelerations from the state at t, then everyone moves.
 
-Lane IDs: 0 = mainline, 1 = ramp / acceleration lane. Units: SI. Position = front bumper.
+Lane IDs: 0 = rightmost mainline lane (next to the ramp), 1, 2, ... to the left; -1 = ramp /
+acceleration lane. Units: SI. Position = front bumper.
 """
 from __future__ import annotations
 
@@ -37,7 +44,7 @@ import yaml
 
 from tmc.idm import IDMParams, acceleration, ballistic_update, load_params
 
-MAIN, RAMP = 0, 1
+MAIN, RAMP = 0, -1   # MAIN = rightmost mainline lane; further mainline lanes are 1, 2, ...
 STOP_MARGIN_M = 1.0  # ramp vehicles that cannot merge stop this far before the end of the acceleration lane
 
 
@@ -63,6 +70,16 @@ class RampConfig:
 
 
 @dataclass
+class LaneChangeConfig:
+    """Discretionary lane changes between mainline lanes (symmetric MOBIL). Used only if n_lanes >= 2."""
+    enabled: bool = True
+    politeness: float = 0.2              # p: weight on the followers' acceleration changes
+    threshold_mps2: float = 0.1          # delta a_th: minimum net gain to change
+    b_safe_mps2: float = 4.0             # safety: max deceleration imposed on self and new follower
+    cooldown_s: float = 3.0              # min time between two changes of one vehicle (anti ping-pong)
+
+
+@dataclass
 class ScenarioConfig:
     scenario_id: str
     demand_id: str
@@ -75,8 +92,10 @@ class ScenarioConfig:
     arrival_process: str                 # "poisson" or "uniform"
     demand_profile: list                 # [[start_s, end_s, flow_veh_per_h], ...]
     lane_id: int = MAIN
-    initial_vehicles: list = field(default_factory=list)  # [[position_m, speed_mps], ...] on the mainline
+    initial_vehicles: list = field(default_factory=list)  # [[position_m, speed_mps(, lane)], ...] mainline
     ramp: RampConfig | None = None
+    n_lanes: int = 1
+    lane_change: LaneChangeConfig = field(default_factory=LaneChangeConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ScenarioConfig":
@@ -98,6 +117,14 @@ class ScenarioConfig:
                 lane_end_decel_mps2=r.get("lane_end_decel_mps2"),
                 speed_adaptation=bool(r.get("speed_adaptation", False)),
             )
+        lc = d.get("lane_change") or {}
+        lane_change = LaneChangeConfig(
+            enabled=bool(lc.get("enabled", True)),
+            politeness=float(lc.get("politeness", 0.2)),
+            threshold_mps2=float(lc.get("threshold_mps2", 0.1)),
+            b_safe_mps2=float(lc.get("b_safe_mps2", 4.0)),
+            cooldown_s=float(lc.get("cooldown_s", 3.0)),
+        )
         return cls(
             scenario_id=d["scenario_id"],
             demand_id=d["demand_id"],
@@ -111,6 +138,8 @@ class ScenarioConfig:
             arrival_process=d["arrivals"]["process"],
             demand_profile=[list(map(float, row)) for row in d["arrivals"]["profile"]],
             ramp=ramp,
+            n_lanes=int(d["road"].get("n_lanes", 1)),
+            lane_change=lane_change,
         )
 
 
@@ -137,16 +166,21 @@ def generate_arrivals(profile, process: str, seed: int | None) -> np.ndarray:
 
 # --------------------------------------------------------------------------- results
 
+LC_COLUMNS = ["time_s", "vehicle_id", "from_lane", "to_lane", "position_m", "speed_mps", "kind"]
+
+
 @dataclass
 class SimResult:
     config: ScenarioConfig
     params: IDMParams
     trajectories: pd.DataFrame   # VehicleState rows: time_s, vehicle_id, lane_id, position_m, speed_mps, acceleration_mps2
-    vehicles: pd.DataFrame       # vehicle_id, origin, arrival_s, entry_s, merge_s, exit_s (NaN = did not happen)
-    counts: pd.DataFrame         # time_s, n_arrived, n_queued(_main/_ramp), n_on_road, n_on_main, n_on_ramp, n_exited
+    vehicles: pd.DataFrame       # vehicle_id, origin, arrival_s, entry_s, entry_lane, merge_s, exit_s, n_lane_changes
+    counts: pd.DataFrame         # time_s, n_arrived, n_queued(_main/_ramp), n_on_road, n_on_main, n_on_ramp, n_exited, n_on_lane_<k>
     end_time_s: float
     min_gap_m: float
     cleared: bool                # all scheduled vehicles exited before max_time_s
+    lane_changes: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=LC_COLUMNS))
+    # lane_changes: one row per lane change, kind = "discretionary" (mainline MOBIL) or "merge" (ramp -> lane 0)
 
     def summary(self) -> dict:
         # Only vehicles that arrived before the run ended; later scheduled arrivals are reported separately.
@@ -159,15 +193,18 @@ class SimResult:
         wait = np.where(entered, v["entry_s"] - v["arrival_s"], self.end_time_s - v["arrival_s"])
         is_ramp = (v["origin"] == "ramp").to_numpy()
         c, tr = self.counts, self.trajectories
-        main_speeds = tr.loc[tr["lane_id"] == MAIN, "speed_mps"] if len(tr) else pd.Series(dtype=float)
+        main_speeds = tr.loc[tr["lane_id"] >= MAIN, "speed_mps"] if len(tr) else pd.Series(dtype=float)
+        lc = self.lane_changes
         return {
             "scenario_id": self.config.scenario_id,
             "demand_id": self.config.demand_id,
             "dt_s": self.config.dt_s,
+            "n_lanes": self.config.n_lanes,
             "n_arrived": int(len(v)),
             "n_arrived_ramp": int(is_ramp.sum()),
             "n_exited": int(exited.sum()),
             "n_merged": int(v["merge_s"].notna().sum()),
+            "n_lane_changes": int((lc["kind"] == "discretionary").sum()) if len(lc) else 0,
             "unmet_demand_veh": int((~entered).sum()),
             "on_road_at_end_veh": int((entered & ~exited).sum()),
             "demand_not_yet_arrived_veh": n_not_arrived,
@@ -209,6 +246,13 @@ class _Lane:
         keep = ~mask
         self.ids, self.x, self.v = self.ids[keep], self.x[keep], self.v[keep]
 
+    def remove_at(self, i: int):
+        self.ids, self.x, self.v = np.delete(self.ids, i), np.delete(self.x, i), np.delete(self.v, i)
+
+    def slot(self, x: float) -> int:
+        """Index a vehicle at x would take: first vehicle with position <= x (its would-be follower)."""
+        return int(np.searchsorted(-self.x, -x, side="left"))
+
     def gaps_and_dv(self, length: float):
         """Gap to leader and approach rate; the most downstream vehicle has an infinite gap."""
         n = len(self.x)
@@ -223,9 +267,12 @@ class _Lane:
 class FreewaySegment:
     def __init__(self, params: IDMParams, cfg: ScenarioConfig,
                  arrivals: np.ndarray | None = None, ramp_arrivals: np.ndarray | None = None):
+        if cfg.n_lanes < 1:
+            raise ValueError("n_lanes must be >= 1")
         self.p = params
         self.cfg = cfg
         self.ramp = cfg.ramp
+        self.lc = cfg.lane_change
         main_arr = generate_arrivals(cfg.demand_profile, cfg.arrival_process, cfg.seed) \
             if arrivals is None else np.sort(np.asarray(arrivals, dtype=float))
         if self.ramp is None:
@@ -244,13 +291,21 @@ class FreewaySegment:
         self.origin = np.array(["main"] * (n_init + n_m) + ["ramp"] * n_r)
         self.arrival_s = np.concatenate([np.zeros(n_init), main_arr, ramp_arr])
         self.entry_s = np.full(n, np.nan)
+        self.entry_lane = np.full(n, np.nan)
         self.merge_s = np.full(n, np.nan)
         self.exit_s = np.full(n, np.nan)
+        self.last_lc = np.full(n, -np.inf)   # time of each vehicle's last lane change or merge
         self.entry_s[:n_init] = 0.0
 
-        self.main, self.rlane = _Lane(), _Lane()
-        for i, (x0, v0) in enumerate(init):
-            self.main.insert(len(self.main), i, float(x0), float(v0))
+        self.lanes = [_Lane() for _ in range(cfg.n_lanes)]
+        self.rlane = _Lane()
+        for i, row in enumerate(init):
+            lane = int(row[2]) if len(row) > 2 else MAIN
+            if not 0 <= lane < cfg.n_lanes:
+                raise ValueError(f"initial vehicle {i}: lane {lane} outside 0..{cfg.n_lanes - 1}")
+            ln = self.lanes[lane]
+            ln.insert(len(ln), i, float(row[0]), float(row[1]))
+            self.entry_lane[i] = lane
         # Pending arrivals per boundary: (time, vehicle_id), in time order.
         self._pending = {
             MAIN: deque(zip(main_arr, range(n_init, n_init + n_m))),
@@ -259,49 +314,158 @@ class FreewaySegment:
         self.queue = {MAIN: deque(), RAMP: deque()}
         self.n_arrived = n_init
         self.min_gap = np.inf
+        self.lc_log: list[tuple] = []
         self.last_arrival = float(max(main_arr.max(initial=0.0), ramp_arr.max(initial=0.0)))
 
+    @property
+    def main(self) -> _Lane:
+        """Rightmost mainline lane (the only one when n_lanes = 1)."""
+        return self.lanes[MAIN]
+
     # -- boundary helpers
+    def _entry_gap(self, lane: _Lane, x_entry: float):
+        """(v_ins, gap) for a vehicle entering `lane` at x_entry."""
+        if len(lane) == 0:
+            return self.p.v0, np.inf
+        return float(lane.v[-1]), float(lane.x[-1] - self.p.length - x_entry)
+
     def _try_insert(self, lane: _Lane, queue: deque, x_entry: float, t: float) -> None:
         if not queue:
             return
-        if len(lane) == 0:
-            v_ins, gap = self.p.v0, np.inf
-        else:
-            v_ins = float(lane.v[-1])
-            gap = float(lane.x[-1] - self.p.length - x_entry)
+        v_ins, gap = self._entry_gap(lane, x_entry)
         if gap >= self.p.s0 + v_ins * self.p.T:
             vid = queue.popleft()
             lane.insert(len(lane), vid, x_entry, v_ins)
             self.entry_s[vid] = t
 
+    def _enter_mainline(self, t: float) -> None:
+        """One queue feeds all mainline lanes: every lane passing the entry test takes the next queued
+        vehicle, largest gap first (ties -> rightmost lane), at most one per lane per step."""
+        q = self.queue[MAIN]
+        if not q:
+            return
+        options = []
+        for k, ln in enumerate(self.lanes):
+            v_ins, gap = self._entry_gap(ln, 0.0)
+            if gap >= self.p.s0 + v_ins * self.p.T:
+                options.append((-gap, k, v_ins))
+        for _, k, v_ins in sorted(options):
+            if not q:
+                break
+            vid = q.popleft()
+            ln = self.lanes[k]
+            ln.insert(len(ln), vid, 0.0, v_ins)
+            self.entry_s[vid] = t
+            self.entry_lane[vid] = k
+
+    def _safe_slot(self, lane: _Lane, x: float, v: float, b_safe: float):
+        """MOBIL safety criterion for a vehicle (x, v) moving into `lane`: gaps to the new leader and
+        follower > 0, and neither the mover nor its new follower must brake harder than b_safe.
+        Returns the insertion index if safe, else None."""
+        p = self.p
+        j = lane.slot(x)
+        if j > 0:
+            s_lead = lane.x[j - 1] - x - p.length
+            if not (s_lead > 0 and acceleration(v, s_lead, v - lane.v[j - 1], p) >= -b_safe):
+                return None
+        if j < len(lane):
+            s_fol = x - lane.x[j] - p.length
+            if not (s_fol > 0 and acceleration(lane.v[j], s_fol, lane.v[j] - v, p) >= -b_safe):
+                return None
+        return j
+
     def _merges(self, t: float) -> None:
-        """Mandatory merge from the acceleration lane, MOBIL safety criterion only."""
-        r, m, p = self.rlane, self.main, self.p
-        b_safe = self.ramp.b_safe_mps2
+        """Mandatory merge from the acceleration lane into lane 0, MOBIL safety criterion only."""
+        r, m = self.rlane, self.main
         i = 0
         while i < len(r):
             xr, vr = float(r.x[i]), float(r.v[i])
             if xr < self.ramp.merge_start_m:
                 break  # lane is ordered downstream-first; nobody further back is in the merge zone
-            # first mainline index with x <= xr (the would-be follower); leader is the one before it
-            j = int(np.searchsorted(-m.x, -xr, side="left"))
-            ok = True
-            if j > 0:
-                s_lead = m.x[j - 1] - xr - p.length
-                ok = s_lead > 0 and acceleration(vr, s_lead, vr - m.v[j - 1], p) >= -b_safe
-            if ok and j < len(m):
-                s_fol = xr - m.x[j] - p.length
-                ok = s_fol > 0 and acceleration(m.v[j], s_fol, m.v[j] - vr, p) >= -b_safe
-            if ok:
+            j = self._safe_slot(m, xr, vr, self.ramp.b_safe_mps2)
+            if j is not None:
                 vid = int(r.ids[i])
                 m.insert(j, vid, xr, vr)
-                mask = np.zeros(len(r), dtype=bool)
-                mask[i] = True
-                r.remove(mask)
+                r.remove_at(i)
                 self.merge_s[vid] = t
+                self.last_lc[vid] = t
+                self.lc_log.append((t, vid, RAMP, MAIN, xr, vr, "merge"))
             else:
                 i += 1
+
+    def _lane_changes(self, t: float, accs: list) -> None:
+        """Discretionary lane changes between mainline lanes (symmetric MOBIL).
+
+        Step 1 (state at t, vectorized): for each vehicle i in lane A and each neighbor lane B, with
+            a_c       = i's current acceleration,             a_c_new = i's acceleration behind B's leader,
+            n         = i's would-be follower in B,           da_n    = n's acceleration change,
+            o         = i's current follower in A,            da_o    = o's change if i leaves,
+        candidate if: cooldown over, gaps > 0, a_c_new >= -b_safe, n's new acceleration >= -b_safe, and
+            gain = a_c_new - a_c + p * (da_n + da_o) > threshold.
+        Step 2: apply candidates largest gain first; re-check safety against the updated lanes, skip any
+        vehicle that has already changed in this step.
+        """
+        lc, p = self.lc, self.p
+        bs = lc.b_safe_mps2
+        cands = []
+        for ia, A in enumerate(self.lanes):
+            n = len(A)
+            if n == 0:
+                continue
+            ready = (t - self.last_lc[A.ids]) >= lc.cooldown_s - 1e-9
+            if not ready.any():
+                continue
+            a_c = accs[ia]
+            # old follower o = i+1 would follow i-1 (or a free road if i = 0) once i leaves
+            da_o = np.zeros(n)
+            if n > 1:
+                fo = np.arange(1, n)
+                lead = fo - 2                       # i - 1, where i = fo - 1
+                s_o = np.full(n - 1, np.inf)
+                dv_o = np.zeros(n - 1)
+                h = lead >= 0
+                s_o[h] = A.x[lead[h]] - A.x[fo[h]] - p.length
+                dv_o[h] = A.v[fo[h]] - A.v[lead[h]]
+                da_o[:-1] = acceleration(A.v[fo], s_o, dv_o, p) - a_c[fo]
+            for ib in (ia - 1, ia + 1):
+                if not 0 <= ib < len(self.lanes):
+                    continue
+                B, a_b = self.lanes[ib], accs[ib]
+                j = np.searchsorted(-B.x, -A.x, side="left")   # would-be follower index in B
+                hl, hf = j > 0, j < len(B)
+                s_l = np.full(n, np.inf)
+                dv_l = np.zeros(n)
+                s_l[hl] = B.x[j[hl] - 1] - A.x[hl] - p.length
+                dv_l[hl] = A.v[hl] - B.v[j[hl] - 1]
+                a_c_new = acceleration(A.v, s_l, dv_l, p)
+                s_f = np.full(n, np.inf)
+                a_n_new = np.zeros(n)
+                da_n = np.zeros(n)
+                if hf.any():
+                    jf = j[hf]
+                    s_f[hf] = A.x[hf] - B.x[jf] - p.length
+                    a_n_new[hf] = acceleration(B.v[jf], s_f[hf], B.v[jf] - A.v[hf], p)
+                    da_n[hf] = a_n_new[hf] - a_b[jf]
+                with np.errstate(invalid="ignore"):
+                    safe = (s_l > 0) & (s_f > 0) & (a_c_new >= -bs) & (~hf | (a_n_new >= -bs))
+                gain = a_c_new - a_c + lc.politeness * (da_n + da_o)
+                for i in np.flatnonzero(ready & safe & (gain > lc.threshold_mps2)):
+                    cands.append((-float(gain[i]), int(A.ids[i]), ia, ib))
+        moved = set()
+        for _, vid, ia, ib in sorted(cands):
+            if vid in moved:
+                continue
+            A, B = self.lanes[ia], self.lanes[ib]
+            i = int(np.flatnonzero(A.ids == vid)[0])
+            x, v = float(A.x[i]), float(A.v[i])
+            j = self._safe_slot(B, x, v, bs)
+            if j is None:
+                continue
+            A.remove_at(i)
+            B.insert(j, vid, x, v)
+            self.last_lc[vid] = t
+            moved.add(vid)
+            self.lc_log.append((t, vid, ia, ib, x, v, "discretionary"))
 
     def _ramp_accelerations(self, s_r, dv_r) -> np.ndarray:
         """Ramp-lane accelerations = min of three demands:
@@ -311,7 +475,7 @@ class FreewaySegment:
             STOP_MARGIN_M before merge_end. This replaces IDM's virtual standing obstacle, whose
             approach-rate term makes vehicles brake ~v^2/(2 sqrt(ab)) ahead (~180 m at 20 m/s), i.e.
             for the whole acceleration lane;
-        (3) speed adaptation (x >= merge_start): IDM toward the adjacent mainline leader, with braking
+        (3) speed adaptation (x >= merge_start): IDM toward the adjacent lane-0 leader, with braking
             capped at b, so ramp vehicles arrive at the merge at mainline speed.
         """
         p, r, m, rc = self.p, self.rlane, self.main, self.ramp
@@ -327,11 +491,11 @@ class FreewaySegment:
             b_req = v * v / (2 * d)
             if b_req >= (rc.lane_end_decel_mps2 or p.b):
                 acc[0] = min(acc[0], -b_req)
-        # (3) adapt to the mainline vehicle just ahead
+        # (3) adapt to the lane-0 vehicle just ahead
         if not rc.speed_adaptation:
             return acc
         for i in np.flatnonzero(r.x >= rc.merge_start_m):
-            j = int(np.searchsorted(-m.x, -r.x[i], side="left"))  # first mainline vehicle with x <= x_i
+            j = m.slot(r.x[i])  # first lane-0 vehicle with x <= x_i
             if j == 0:
                 continue
             s = m.x[j - 1] - r.x[i] - p.length
@@ -340,12 +504,12 @@ class FreewaySegment:
         return acc
 
     def _yield(self, acc_m: np.ndarray) -> None:
-        """Cooperative yielding (after Hidas 2005): for each ramp vehicle in the merge zone, the mainline
+        """Cooperative yielding (after Hidas 2005): for each ramp vehicle in the merge zone, the lane-0
         vehicle directly behind it treats it as an extra leader, but only if the IDM response needs no
         more than comfortable braking b. Otherwise it does not yield. Modifies acc_m in place."""
         p, r, m, rc = self.p, self.rlane, self.main, self.ramp
         for i in np.flatnonzero(r.x >= rc.merge_start_m):
-            j = int(np.searchsorted(-m.x, -r.x[i], side="left"))  # would-be follower
+            j = m.slot(r.x[i])  # would-be follower
             if j >= len(m):
                 continue
             s = r.x[i] - m.x[j] - p.length
@@ -355,12 +519,28 @@ class FreewaySegment:
             if a_y >= -p.b:
                 acc_m[j] = min(acc_m[j], a_y)
 
+    def _accelerations(self):
+        """Accelerations of every mainline lane and the ramp lane from the current state.
+        Returns (list of per-lane arrays, ramp array, list of per-lane gaps, ramp gaps)."""
+        p = self.p
+        accs, gaps = [], []
+        for ln in self.lanes:
+            s, dv = ln.gaps_and_dv(p.length)
+            accs.append(acceleration(ln.v, s, dv, p))
+            gaps.append(s)
+        s_r, dv_r = self.rlane.gaps_and_dv(p.length)
+        acc_r = self._ramp_accelerations(s_r, dv_r) if self.ramp else np.empty(0)
+        if self.ramp and self.ramp.cooperative_yield:
+            self._yield(accs[MAIN])
+        return accs, acc_r, gaps, s_r
+
     # -- main loop
     def run(self) -> SimResult:
         cfg, p = self.cfg, self.p
         dt = cfg.dt_s
         rec_every = max(1, int(round(cfg.record_every_s / dt)))
         max_steps = int(np.ceil(cfg.max_time_s / dt))
+        do_lc = cfg.n_lanes >= 2 and self.lc.enabled
         traj_rows, count_rows = [], []
         k = 0
         while True:
@@ -371,19 +551,16 @@ class FreewaySegment:
                 while pend and pend[0][0] <= t + 1e-9:
                     self.queue[b].append(pend.popleft()[1])
                     self.n_arrived += 1
-            # 2) boundary entries and merges (state at t)
-            self._try_insert(self.main, self.queue[MAIN], 0.0, t)
+            # 2) boundary entries, merges, lane changes (state at t)
+            self._enter_mainline(t)
             if self.ramp:
                 self._try_insert(self.rlane, self.queue[RAMP], self.ramp.entrance_m, t)
                 self._merges(t)
+            if do_lc:
+                self._lane_changes(t, self._accelerations()[0])
             # 3) accelerations + safety audit
-            s_m, dv_m = self.main.gaps_and_dv(p.length)
-            s_r, dv_r = self.rlane.gaps_and_dv(p.length)
-            acc_m = acceleration(self.main.v, s_m, dv_m, p)
-            acc_r = self._ramp_accelerations(s_r, dv_r) if self.ramp else np.empty(0)
-            if self.ramp and self.ramp.cooperative_yield:
-                self._yield(acc_m)
-            finite = np.concatenate([s_m[np.isfinite(s_m)], s_r[1:]])
+            accs, acc_r, gaps, s_r = self._accelerations()
+            finite = np.concatenate([g[np.isfinite(g)] for g in gaps] + [s_r[1:]])
             if len(finite):
                 g = float(finite.min())
                 self.min_gap = min(self.min_gap, g)
@@ -391,7 +568,8 @@ class FreewaySegment:
                     raise RuntimeError(f"collision/overlap at t={t:.2f}s (min gap {g:.3f} m)")
             # 4) record state at t
             if k % rec_every == 0:
-                for lane_id, ln, acc in ((MAIN, self.main, acc_m), (RAMP, self.rlane, acc_r)):
+                for lane_id, ln, acc in [*((i, ln, a) for i, (ln, a) in enumerate(zip(self.lanes, accs))),
+                                         (RAMP, self.rlane, acc_r)]:
                     if len(ln):
                         traj_rows.append(pd.DataFrame({
                             "time_s": np.full(len(ln), t), "vehicle_id": ln.ids.copy(),
@@ -399,39 +577,47 @@ class FreewaySegment:
                             "speed_mps": ln.v.copy(), "acceleration_mps2": acc,
                         }))
                 qm, qr = len(self.queue[MAIN]), len(self.queue[RAMP])
-                count_rows.append((t, self.n_arrived, qm + qr, qm, qr, len(self.main) + len(self.rlane),
-                                   len(self.main), len(self.rlane), int(np.isfinite(self.exit_s).sum())))
+                on_lanes = [len(ln) for ln in self.lanes]
+                count_rows.append((t, self.n_arrived, qm + qr, qm, qr, sum(on_lanes) + len(self.rlane),
+                                   sum(on_lanes), len(self.rlane), int(np.isfinite(self.exit_s).sum()),
+                                   *on_lanes))
             # 5) stop when demand is over and everything has cleared, or at the time limit
             done = (not self._pending[MAIN] and not self._pending[RAMP] and not self.queue[MAIN]
-                    and not self.queue[RAMP] and len(self.main) == 0 and len(self.rlane) == 0)
+                    and not self.queue[RAMP] and all(len(ln) == 0 for ln in self.lanes)
+                    and len(self.rlane) == 0)
             if (done and t >= self.last_arrival) or k >= max_steps:
                 break
-            # 6) move everyone simultaneously
-            x_old = self.main.x
-            self.main.x, self.main.v = ballistic_update(self.main.x, self.main.v, acc_m, dt)
+            # 6) move everyone simultaneously, 7) exits at the downstream boundary (interpolated in the step)
+            for ln, acc in zip(self.lanes, accs):
+                if len(ln) == 0:
+                    continue
+                x_old = ln.x
+                ln.x, ln.v = ballistic_update(ln.x, ln.v, acc, dt)
+                out = ln.x > cfg.length_m
+                if np.any(out):
+                    frac = (cfg.length_m - x_old[out]) / (ln.x[out] - x_old[out])
+                    self.exit_s[ln.ids[out]] = t + frac * dt
+                    ln.remove(out)
             if len(self.rlane):
                 self.rlane.x, self.rlane.v = ballistic_update(self.rlane.x, self.rlane.v, acc_r, dt)
-            # 7) exits at the downstream boundary (interpolate crossing time inside the step)
-            out = self.main.x > cfg.length_m
-            if np.any(out):
-                frac = (cfg.length_m - x_old[out]) / (self.main.x[out] - x_old[out])
-                self.exit_s[self.main.ids[out]] = t + frac * dt
-                self.main.remove(out)
             k += 1
 
         end_t = k * dt
+        lc = pd.DataFrame(self.lc_log, columns=LC_COLUMNS)
+        n_changes = np.bincount(lc.loc[lc["kind"] == "discretionary", "vehicle_id"].astype(int),
+                                minlength=len(self.arrival_s)) if len(lc) else np.zeros(len(self.arrival_s), int)
         vehicles = pd.DataFrame({
             "vehicle_id": np.arange(len(self.arrival_s)), "origin": self.origin,
-            "arrival_s": self.arrival_s, "entry_s": self.entry_s, "merge_s": self.merge_s,
-            "exit_s": self.exit_s,
+            "arrival_s": self.arrival_s, "entry_s": self.entry_s, "entry_lane": self.entry_lane,
+            "merge_s": self.merge_s, "exit_s": self.exit_s, "n_lane_changes": n_changes,
         })
         counts = pd.DataFrame(count_rows, columns=["time_s", "n_arrived", "n_queued", "n_queued_main",
                                                    "n_queued_ramp", "n_on_road", "n_on_main", "n_on_ramp",
-                                                   "n_exited"])
+                                                   "n_exited"] + [f"n_on_lane_{i}" for i in range(cfg.n_lanes)])
         traj = pd.concat(traj_rows, ignore_index=True) if traj_rows else pd.DataFrame(
             columns=["time_s", "vehicle_id", "lane_id", "position_m", "speed_mps", "acceleration_mps2"])
         cleared = bool(np.isfinite(self.exit_s).all())  # False also if the time limit cut off demand
-        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared)
+        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc)
 
 
 SingleLaneSegment = FreewaySegment  # backward-compatible name: a segment with no ramp configured

@@ -29,3 +29,22 @@ The animated viewer (`python -m tmc.viz`) showed ramp vehicles stopped bumper-to
 | + adaptation + yielding, b_safe 4 | 1428 / 58.7 / 3.9 | 1447 / 39.7 / 23.7 |
 
 **Interpretation:** No variant is credible yet. Even at X = 0.92 (below q_c), every variant reaches min speed 0 and discharges only ~1400-1490 veh/h, about 15-20% below q_c = 1742. Without yielding, the ramp starves once a vehicle stops at the lane end. With yielding, the mainline collapses instead. The likely structural cause: one mainline lane with T = 1.6 s leaves no room to absorb a merge, and mainline drivers cannot move over. **Decision needed before any control comparison:** see the design record, section 2 (merge model). S1 with current defaults: TTT 67.9 veh*h, ramp wait 5.5 veh*h, peak ramp queue 48, discharge 1483 veh/h, cleared at 2614 s.
+
+## E2 | 2026-11-07 | Two mainline lanes + symmetric MOBIL lane changing (S2_twolane_onramp_nocontrol)
+- **Prediction (stated before any two-lane run, in the planning discussion):** With a second lane, right-lane drivers can move left to absorb merging vehicles. So (1) at X = 0.92 the merge no longer breaks down, and (2) at X ~ 1.03 outflow gets much closer to 2 q_c = 3485 veh/h (computed) than the single lane's ~1460 out of 1742 did. With no ramp, the two lanes split traffic about 50/50, and a saturated entrance discharges about 2 q_c.
+- **Change:** `n_lanes` mainline lanes (lane 0 = right, ramp lane id now -1) in `src/tmc/network.py`. Symmetric MOBIL discretionary lane changes (p = 0.2, threshold 0.1 m/s^2, b_safe 4 m/s^2, 3 s cooldown). Decisions use the state at t and are applied largest gain first, each re-checked for safety. One entry queue feeds both lanes. Lane-change log in `SimResult.lane_changes`. The ramp merge rule is unchanged, now into lane 0. Config `configs/scenario_s2_twolane_onramp.yaml` (S1 demand x2, so the X profile matches S1), seed 181, dt 0.1 s.
+- **Regression:** S0 and S1 summaries and trajectories are bit-identical to the pre-change code.
+- **Result, no ramp (prediction held):** At 2400 veh/h, the lanes split 50/50 with 2 lane changes in 1800 s. Saturated entrance discharge was 3435 veh/h at 4200 veh/h demand (98.6% of 2 q_c); the test checks it within 5%. Gaps stay > 29 m.
+- **Result, with ramp (prediction failed):** Variant scan, steady demand 1800 s, seed 181, mainline 2600 veh/h, ramp 600 (X = 0.92) or 1000 (X = 1.03). Columns: exit flow over 600-1800 s / ramp merges per hour over 600-1800 s / mean mainline speed at 1000-1500 m.
+
+| Variant | X = 0.92 out / ramp vph / upstream mph | X = 1.03 out / ramp vph / upstream mph |
+|---|---|---|
+| plain MOBIL merge (S2 default) | 2736 / 0 / 61.5 | 2736 / 0 / 61.5 |
+| + cooperative yield | 2415 / 483 / 8.7 (9520 lane changes) | 2442 / 402 / 9.2 |
+| + yield, min speed ratio 0.5 | 2742 / 0 / 61.5 | 3087 / 294 / 20.0 |
+| + speed adaptation | 2736 / 0 / 61.5 | 2736 / 0 / 61.5 |
+| plain, lane-end trigger 3 m/s^2 | 2769 / 0 / 61.5 | 2808 / 0 / 61.1 |
+| adaptation, lane-end trigger 3 m/s^2 | 2934 / 123 / 54.0 | 2736 / 0 / 61.5 |
+
+S2 itself: 1995 vehicles (435 ramp), all merged and exited, cleared at 2903 s. TTT 190.2 veh*h, of which ramp-queue wait 94.0. Peak ramp queue 271. 814 discretionary lane changes; median 0 per vehicle, max 12. The heavy changers (15 vehicles) hop lanes at ~2 mph in the queue beside the stalled ramp. Min gap 0.79 m.
+- **Interpretation:** The lane-change mechanics verify (tests/test_multilane.py), but the second lane does not fix the merge. Mechanism: ramp merges stop entirely after ~600 s while both mainline lanes run at 61 mph. The first ramp vehicle that fails to find a gap brakes to the lane end. Stopped, it needs a ~165 m gap to keep a 28 m/s lane-0 follower within b_safe, and lane-0 spacing at 1300 veh/h is ~76 m. Lane-0 drivers have no reason to move left, because ramp vehicles do not enter their MOBIL accelerations. Unrestricted yielding gives them that reason, but then they yield to stopped ramp vehicles and the mainline collapses. Contributing causes: (a) the lane-end trigger b = 1.67 m/s^2 means braking starts ~230 m before the end at 28 m/s, i.e. almost the whole 250 m acceleration lane; (b) a ramp vehicle at mainline speed stays beside the same car (no relative speed to sweep gaps). Conclusion: the merge model, not the lane count, is the binding problem. The "no-signal" baseline is not credible until it is fixed. Decision pending, see design record section 2.

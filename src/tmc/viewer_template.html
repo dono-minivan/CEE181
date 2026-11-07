@@ -111,7 +111,8 @@ const D = /*__DATA__*/null;
 const M = D.meta, R = M.ramp, C = D.counts;
 const MPH = 2.236936, FDT = M.frame_dt, NF = M.n_frames, TMAX = (NF - 1) * FDT;
 const QSP = M.s0 + M.veh_len;                     // display spacing for point-queue cars
-const VEH = D.veh.map(r => ({ id: r[0], ramp: r[1] === 1, f0: r[2], mrel: r[3],
+const NL = M.n_lanes || 1;
+const VEH = D.veh.map(r => ({ id: r[0], ramp: r[1] === 1, f0: r[2], runs: r[3],
   xs: Float32Array.from(r[4], v => v / 10), vs: Float32Array.from(r[5], v => v / 10), t: r[6] }));
 const byId = new Map(VEH.map(v => [v.id, v]));
 
@@ -126,7 +127,7 @@ document.getElementById("vmax").textContent = `${Math.round(M.v0 * MPH)} mph (v0
 document.getElementById("title").textContent = `${M.scenario_id}: animated simulation`;
 document.getElementById("subtitle").textContent =
   `demand ${M.demand_id} · params ${M.param_set} · seed ${M.seed} · dt ${M.dt_s} s · ` +
-  `segment ${M.L} m` + (R ? ` · on-ramp merge ${R.merge_start}–${R.merge_end} m` : " · no ramp") +
+  `segment ${M.L} m, ${NL} lane${NL > 1 ? "s" : ""}` + (R ? ` · on-ramp merge ${R.merge_start}–${R.merge_end} m` : " · no ramp") +
   ` · computed capacity ${M.q_c_vph} veh/h`;
 const fmtT = s => { s = Math.max(0, s); const m = Math.floor(s / 60), r = Math.floor(s % 60); return `${m}:${String(r).padStart(2, "0")}`; };
 const S = D.summary;
@@ -135,6 +136,7 @@ document.getElementById("summary").innerHTML = [
   ["total travel time", `${S.total_travel_time_veh_h} veh·h`], ["ramp-queue wait", `${S.total_ramp_wait_veh_h} veh·h`],
   ["peak ramp queue", `${S.peak_ramp_queue_veh} veh`], ["peak entry queue", `${S.peak_entry_queue_veh} veh`],
   ["min mainline speed", `${(S.min_mainline_speed_mps * MPH).toFixed(1)} mph`], ["unmet demand", `${S.unmet_demand_veh} veh`],
+  ...(NL > 1 ? [["lane changes", `${S.n_lane_changes}`]] : []),
 ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
 // ---------- state
@@ -149,37 +151,42 @@ function pose(v, fr, a) {
   const last = rel === v.xs.length - 1;
   const x = last ? v.xs[rel] + v.vs[rel] * a * FDT : v.xs[rel] + (v.xs[rel + 1] - v.xs[rel]) * a;
   const spd = last ? v.vs[rel] : v.vs[rel] + (v.vs[rel + 1] - v.vs[rel]) * a;
-  // lane blend: 0 = ramp/accel lane, 1 = mainline (smooth sideways move during the merge frame)
-  let m;
-  if (v.mrel < 0) m = 0;
-  else if (rel >= v.mrel) m = 1;
-  else if (rel === v.mrel - 1) m = a;
-  else m = 0;
-  return { x, spd, m };
+  // lane as a float: -1 = ramp/accel lane, 0 = right mainline lane, 1, ... to the left. A change is
+  // drawn as a smooth sideways move across the record interval in which it happened.
+  const L0 = laneAt(v, rel), L1 = last ? L0 : laneAt(v, rel + 1);
+  return { x, spd, L: L0 + (L1 - L0) * a, L0, L1 };
 }
+function laneAt(v, rel) {
+  let l = v.runs[0][1];
+  for (const [r, lane] of v.runs) { if (r > rel) break; l = lane; }
+  return l;
+}
+const laneName = l => l < 0 ? "acceleration lane" : NL === 1 ? "mainline"
+  : `mainline lane ${l}${l === 0 ? " (right)" : l === NL - 1 ? " (left)" : ""}`;
 
 // ---------- geometry for a view: x (m) -> screen
 function makeView(canvas, x0, x1, LW, H) {
   const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth;
-  const h = Math.round(LW * 2 + H + 46);
+  const h = Math.round(LW * (NL + 1) + H + 46);
   const W = Math.round(w * dpr), Hpx = Math.round(h * dpr);
   if (canvas.width !== W || canvas.height !== Hpx) { canvas.style.height = h + "px"; canvas.width = W; canvas.height = Hpx; }
   const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const k = w / (x1 - x0);
-  const yM = 22 + LW / 2, yA = yM + LW;
+  const yLane = l => 22 + LW / 2 + (NL - 1 - l) * LW;   // linear in l, so yLane(-1) is the accel lane
+  const yM = yLane(0), yA = yM + LW, yTop = 22;
   const sx = x => (x - x0) * k;
   const rampY = x => yA + H * (R.merge_start - x) / R.approach;   // along the approach (and beyond, for queue)
-  const yOf = (x, m) => { const yr = (!R || x >= R.merge_start) ? yA : rampY(x); return yr + (yM - yr) * m; };
-  return { ctx, w, h, k, x0, x1, LW, H, yM, yA, sx, rampY, yOf };
+  const yOf = (x, L) => (R && L <= -1 && x < R.merge_start) ? rampY(x) : yLane(L);
+  return { ctx, w, h, k, x0, x1, LW, H, yM, yA, yTop, yLane, sx, rampY, yOf };
 }
 
 function drawRoad(V, detail) {
-  const { ctx, w, h, LW, yM, yA, sx, rampY } = V;
+  const { ctx, w, h, LW, yM, yA, yTop, yLane, sx, rampY } = V;
   ctx.fillStyle = css("--grass"); ctx.fillRect(0, 0, w, h);
   ctx.lineCap = "butt";
   // mainline
   ctx.fillStyle = css("--asphalt");
-  ctx.fillRect(sx(0), yM - LW / 2, sx(M.L) - sx(0), LW);
+  ctx.fillRect(sx(0), yTop, sx(M.L) - sx(0), NL * LW);
   if (R) {
     // approach ramp (as a thick polyline) and the queue storage stub beyond the entrance
     ctx.strokeStyle = css("--asphalt"); ctx.lineWidth = LW;
@@ -199,7 +206,12 @@ function drawRoad(V, detail) {
   }
   // markings
   ctx.strokeStyle = css("--marking"); ctx.lineWidth = detail ? 1.5 : 1;
-  ctx.beginPath(); ctx.moveTo(sx(0), yM - LW / 2); ctx.lineTo(sx(M.L), yM - LW / 2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(sx(0), yTop); ctx.lineTo(sx(M.L), yTop); ctx.stroke();
+  if (NL > 1) {   // dashed lane dividers between mainline lanes
+    ctx.setLineDash(detail ? [10, 14] : [4, 6]); ctx.beginPath();
+    for (let l = 1; l < NL; l++) { const y = yLane(l) + LW / 2; ctx.moveTo(sx(0), y); ctx.lineTo(sx(M.L), y); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
   if (R) {
     ctx.beginPath(); ctx.moveTo(sx(0), yM + LW / 2); ctx.lineTo(sx(R.merge_start), yM + LW / 2);
     ctx.moveTo(sx(R.merge_end), yM + LW / 2); ctx.lineTo(sx(M.L), yM + LW / 2); ctx.stroke();
@@ -256,12 +268,12 @@ function drawVehicles(V, fr, a, detail, collect) {
   let n = 0, sum = 0;
   for (const v of VEH) {
     const P = pose(v, fr, a); if (!P) continue;
-    if (P.m >= 1) { n++; sum += P.spd; }
+    if (P.L0 >= 0) { n++; sum += P.spd; }
     if (P.x < x0 - pad || P.x > x1 + pad + (R ? R.approach : 0)) continue;
-    const y = V.yOf(P.x, P.m);
+    const y = V.yOf(P.x, P.L);
     let ang = 0;
-    if (P.m === 0 && R && P.x < R.merge_start) ang = rampAng;
-    else if (P.m > 0 && P.m < 1) ang = Math.atan2(yM - yA, Math.max(1, (v.vs[fr - v.f0] || 1) * FDT * k));
+    if (P.L0 < 0 && P.L1 < 0 && R && P.x < R.merge_start) ang = rampAng;
+    else if (P.L0 !== P.L1) ang = Math.atan2(V.yLane(P.L1) - V.yLane(P.L0), Math.max(1, (v.vs[fr - v.f0] || 1) * FDT * k));
     car(V, P.x, y, ang, len, wid, speedColor(P.spd), v.ramp, detail && selected === v.id);
     if (collect) collect.push({ id: v.id, X: V.sx(P.x) - len / 2, Y: y });
   }
@@ -322,7 +334,8 @@ function renderInfo(fr, a) {
   const f = s => s === null ? "–" : `${s.toFixed(1)} s (${fmtT(s)})`;
   const [arr, ent, mer, ex] = v.t;
   const where = !P ? (t < (ent ?? Infinity) ? "waiting in queue / not yet arrived" : "exited")
-    : P.m >= 1 ? "mainline" : (R && P.x >= R.merge_start ? "acceleration lane" : "ramp approach");
+    : P.L0 >= 0 ? laneName(P.L0) : (R && P.x >= R.merge_start ? "acceleration lane" : "ramp approach");
+  const nChanges = v.runs.filter(([, l], i) => i > 0 && l >= 0 && v.runs[i - 1][1] >= 0).length;
   el.className = "";
   el.innerHTML = `<table>
     <tr><td>vehicle id</td><td>${v.id} (${v.ramp ? "ramp" : "mainline"} origin)</td></tr>
@@ -330,6 +343,7 @@ function renderInfo(fr, a) {
     <tr><td>arrived</td><td>${f(arr)}</td></tr>
     <tr><td>entered road</td><td>${f(ent)}${ent !== null && arr !== null ? ` · waited ${(ent - arr).toFixed(1)} s` : ""}</td></tr>
     <tr><td>merged</td><td>${v.ramp ? f(mer) : "n/a"}</td></tr>
+    ${NL > 1 ? `<tr><td>lane changes</td><td>${nChanges} (recorded at ${FDT} s)</td></tr>` : ""}
     <tr><td>exited</td><td>${f(ex)}${ex !== null && arr !== null ? ` · travel time ${(ex - arr).toFixed(1)} s` : ""}</td></tr>
   </table>`;
 }

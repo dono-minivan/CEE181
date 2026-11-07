@@ -1,0 +1,42 @@
+# S2: two mainline lanes + MOBIL lane changing + unmetered on-ramp (no control).
+# Same geometry and X profile as S1, demand scaled x2: X = (q_main + q_ramp) / (2 * q_c), 2 q_c ~= 3485 veh/h
+# (computed in code). Peak X = (2600 + 1000) / 3485 ~= 1.03.
+# STATUS: the merge deadlocks in this configuration (docs/experiment_log.md E2). Not a valid baseline yet.
+scenario_id: S2_twolane_onramp_nocontrol
+demand_id: D2_peak_X103_2lane
+param_set: baseline
+seed: 181                        # ramp stream uses seed + 1000
+road:
+  length_m: 3000.0
+  n_lanes: 2                     # lane 0 = right (ramp side), lane 1 = left
+sim:
+  dt_s: 0.1
+  record_every_s: 1.0
+  max_time_s: 7200.0
+arrivals:                        # mainline, at x = 0 (one queue feeds both lanes)
+  process: poisson
+  profile:                       # [start_s, end_s, flow_veh_per_h]
+    - [0, 600, 2600]
+    - [600, 1500, 2600]
+    - [1500, 2400, 1800]
+lane_change:                     # symmetric MOBIL (no keep-right bias); see docs/source_to_design.md
+  enabled: true
+  politeness: 0.2                # p
+  threshold_mps2: 0.1            # delta a_th
+  b_safe_mps2: 4.0
+  cooldown_s: 3.0                # design choice: min time between two changes of one vehicle
+ramp:
+  merge_start_m: 1500.0
+  merge_end_m: 1750.0
+  approach_length_m: 250.0
+  b_safe_mps2: 4.0
+  cooperative_yield: false
+  yield_min_speed_ratio: 0.0
+  speed_adaptation: false
+  lane_end_decel_mps2: null
+  arrivals:
+    process: poisson
+    profile:
+      - [0, 600, 600]
+      - [600, 1500, 1000]
+      - [1500, 2400, 400]

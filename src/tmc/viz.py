@@ -1,12 +1,15 @@
 """Animated viewer: python -m tmc.viz [scenario.yaml] [--open]
 
 Runs a scenario and writes results/<scenario_id>_viewer.html, a self-contained page (no server, no
-internet) that animates the mainline, on-ramp, acceleration lane, and queues with vehicles colored by speed.
+internet) that animates the mainline lanes, lane changes, on-ramp, acceleration lane, and queues with
+vehicles colored by speed.
 
 Display-only conventions (not model behavior):
   * Vehicles in the point queues (mainline entrance, ramp entrance) are drawn as grey cars stacked
     upstream of the entry point at s0 + l spacing. In the model they occupy no road space.
   * Positions are recorded every record_every_s and linearly interpolated between records for drawing.
+    A lane change (or merge) is drawn as a sideways move spread over the record interval in which it
+    happened; in the model it is instantaneous.
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from tmc.idm import capacity
-from tmc.network import MAIN, SimResult, run_scenario
+from tmc.network import SimResult, run_scenario
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = Path(__file__).with_name("viewer_template.html")
@@ -40,11 +43,12 @@ def export(res: SimResult) -> dict:
         if len(frames) > 1 and np.any(np.diff(frames) != 1):
             raise ValueError(f"vehicle {vid}: non-consecutive records")
         lanes = g["lane_id"].to_numpy()
-        on_main = np.flatnonzero(lanes == MAIN)
-        merge_rel = int(on_main[0]) if lanes[0] != MAIN and len(on_main) else (0 if lanes[0] == MAIN else -1)
+        # lane history as runs [[first_frame_rel, lane_id], ...]; -1 = ramp / acceleration lane
+        starts = np.concatenate([[0], np.flatnonzero(np.diff(lanes) != 0) + 1])
+        lane_runs = [[int(i), int(lanes[i])] for i in starts]
         row = info.loc[vid]
         veh.append([
-            int(vid), 1 if row["origin"] == "ramp" else 0, int(frames[0]), merge_rel,
+            int(vid), 1 if row["origin"] == "ramp" else 0, int(frames[0]), lane_runs,
             np.rint(g["position_m"].to_numpy() * 10).astype(int).tolist(),   # decimeters
             np.rint(g["speed_mps"].to_numpy() * 10).astype(int).tolist(),    # dm/s
             [_r(row["arrival_s"]), _r(row["entry_s"]), _r(row["merge_s"]), _r(row["exit_s"])],
@@ -55,7 +59,7 @@ def export(res: SimResult) -> dict:
         "meta": {
             "scenario_id": cfg.scenario_id, "demand_id": cfg.demand_id, "param_set": cfg.param_set,
             "seed": cfg.seed, "dt_s": cfg.dt_s, "frame_dt": dt_f, "n_frames": int(len(c)),
-            "L": cfg.length_m, "veh_len": p.length, "s0": p.s0, "v0": p.v0,
+            "L": cfg.length_m, "n_lanes": cfg.n_lanes, "veh_len": p.length, "s0": p.s0, "v0": p.v0,
             "q_c_vph": round(capacity(p)["q_c_veh_per_h"]),
             "ramp": None if ramp is None else {
                 "merge_start": ramp.merge_start_m, "merge_end": ramp.merge_end_m,

@@ -106,6 +106,7 @@ class ScenarioConfig:
     n_lanes: int = 1
     lane_change: LaneChangeConfig = field(default_factory=LaneChangeConfig)
     detectors: list = field(default_factory=list)   # [DetectorSpec, ...] (tmc.detectors)
+    control: dict | None = None                     # ramp-meter controller spec (tmc.control.make_controller)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ScenarioConfig":
@@ -159,6 +160,7 @@ class ScenarioConfig:
             n_lanes=int(d["road"].get("n_lanes", 1)),
             lane_change=lane_change,
             detectors=[DetectorSpec.from_dict(x) for x in (d.get("detectors") or [])],
+            control=d.get("control"),
         )
 
 
@@ -201,6 +203,7 @@ class SimResult:
     lane_changes: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=LC_COLUMNS))
     # lane_changes: one row per lane change, kind = "discretionary" (mainline MOBIL) or "merge" (ramp -> lane 0)
     observations: pd.DataFrame = field(default_factory=pd.DataFrame)
+    control_trace: pd.DataFrame = field(default_factory=pd.DataFrame)   # one row per controller update
     # observations: one row per detector interval (interfaces.Observation fields), empty if no detectors
 
     def summary(self) -> dict:
@@ -287,7 +290,8 @@ class _Lane:
 
 class FreewaySegment:
     def __init__(self, params: IDMParams, cfg: ScenarioConfig,
-                 arrivals: np.ndarray | None = None, ramp_arrivals: np.ndarray | None = None):
+                 arrivals: np.ndarray | None = None, ramp_arrivals: np.ndarray | None = None,
+                 controller=None):
         if cfg.n_lanes < 1:
             raise ValueError("n_lanes must be >= 1")
         self.p = params
@@ -340,6 +344,19 @@ class FreewaySegment:
         self.last_arrival = float(max(main_arr.max(initial=0.0), ramp_arr.max(initial=0.0)))
         # Detectors are passive: they read the state and never change it.
         self.det = DetectorBank(cfg.detectors, cfg.n_lanes, params.length, cfg.dt_s) if cfg.detectors else None
+        # Ramp meter at the ramp entrance (stop line). meter_rate None = dark (no signal).
+        if controller is None and cfg.control:
+            from tmc.control import make_controller
+            controller = make_controller(cfg.control)
+        if controller is not None and (self.ramp is None or self.det is None):
+            raise ValueError("a ramp controller needs a ramp and detectors (it may only read detectors)")
+        self.controller = controller
+        self.meter_rate: float | None = None
+        self.next_release = 0.0
+        self._next_ctrl = 0.0
+        if controller is not None:
+            from tmc.estimation import DetectorView
+            self._view = DetectorView(self.det)
 
     @property
     def main(self) -> _Lane:
@@ -361,6 +378,23 @@ class FreewaySegment:
             vid = queue.popleft()
             lane.insert(len(lane), vid, x_entry, v_ins)
             self.entry_s[vid] = t
+
+    def _ramp_entry(self, t: float) -> None:
+        """Ramp stop line. Dark meter: the usual entry rule. Metered: one vehicle per green, at most one
+        every 3600 / rate seconds; it starts from a stop (v = 0), so it needs only s0 of clear space."""
+        q = self.queue[RAMP]
+        x_e = self.ramp.entrance_m
+        if self.meter_rate is None:
+            self._try_insert(self.rlane, q, x_e, t)
+            return
+        if not q or t + 1e-9 < self.next_release:
+            return
+        _, gap = self._entry_gap(self.rlane, x_e)
+        if gap >= self.p.s0:
+            vid = q.popleft()
+            self.rlane.insert(len(self.rlane), vid, x_e, 0.0)
+            self.entry_s[vid] = t
+            self.next_release = t + 3600.0 / self.meter_rate
 
     def _enter_mainline(self, t: float) -> None:
         """One queue feeds all mainline lanes: every lane passing the entry test takes the next queued
@@ -660,10 +694,14 @@ class FreewaySegment:
                         self.det.arrival(b)
             if self.det:
                 self.det.advance(t)   # close intervals ending at t (arrivals up to t belong to them)
+            if self.controller is not None and t + 1e-9 >= self._next_ctrl:
+                cmd = self.controller.update(t, self._view)       # sees detector data only
+                self.meter_rate = None if cmd.action == "dark" else float(cmd.value)
+                self._next_ctrl += self.controller.interval_s
             # 2) boundary entries, merges, lane changes (state at t)
             self._enter_mainline(t)
             if self.ramp:
-                self._try_insert(self.rlane, self.queue[RAMP], self.ramp.entrance_m, t)
+                self._ramp_entry(t)
                 self._merges(t)
             if do_lc:
                 self._lane_changes(t, self._accelerations()[0])
@@ -739,7 +777,8 @@ class FreewaySegment:
         if self.det:
             self.det.finish(end_t)
             obs = self.det.to_frame()
-        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc, obs)
+        trace = self.controller.trace_frame() if self.controller is not None else pd.DataFrame()
+        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc, obs, trace)
 
 
 SingleLaneSegment = FreewaySegment  # backward-compatible name: a segment with no ramp configured

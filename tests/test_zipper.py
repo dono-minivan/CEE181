@@ -81,6 +81,7 @@ def test_s3_zipper_with_gap_seeking_safe_and_conserving():
     cfg.ramp.demand_profile = [[0.0, 600.0, 450.0]]
     cfg.record_every_s = 1.0
     cfg.detectors = []
+    cfg.control = None          # a controller needs detectors; this test checks the merge alone
     r = FreewaySegment(load_params(cfg.param_set), cfg).run()
     assert r.cleared and r.min_gap_m > 0
     c = r.counts

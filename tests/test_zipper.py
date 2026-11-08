@@ -69,6 +69,27 @@ def test_saturated_ramp_is_not_starved(zipper_run):
     assert ((mg > 300) & (mg <= 600)).sum() >= 0.5 * 500 * 300 / 3600   # >= half the ramp demand, 300-600 s
 
 
+S3 = S1Z.parent / "scenario_s3_onramp_zipgap.yaml"
+
+
+def test_s3_zipper_with_gap_seeking_safe_and_conserving():
+    """S3 merge (zipper + gap seeking), saturated for 600 s: no overlap (run() raises on gap <= 0),
+    conservation at every recorded step, every ramp vehicle merges inside the zone, all clear."""
+    cfg = ScenarioConfig.from_yaml(S3)
+    assert cfg.ramp.courtesy == "zipper" and cfg.ramp.gap_seeking
+    cfg.demand_profile = [[0.0, 600.0, 1100.0]]
+    cfg.ramp.demand_profile = [[0.0, 600.0, 450.0]]
+    cfg.record_every_s = 1.0
+    cfg.detectors = []
+    r = FreewaySegment(load_params(cfg.param_set), cfg).run()
+    assert r.cleared and r.min_gap_m > 0
+    c = r.counts
+    assert (c["n_arrived"] == c["n_queued"] + c["n_on_road"] + c["n_exited"]).all()
+    mg = r.lane_changes[r.lane_changes["kind"] == "merge"]
+    assert len(mg) == (r.vehicles["origin"] == "ramp").sum()
+    assert mg["position_m"].between(cfg.ramp.merge_start_m, cfg.ramp.merge_end_m).all()
+
+
 def test_bad_courtesy_value_rejected(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text(S1Z.read_text(encoding="utf-8").replace("courtesy: zipper", "courtesy: always"),

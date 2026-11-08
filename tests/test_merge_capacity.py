@@ -53,3 +53,22 @@ def test_ramp_capacity_curve_uses_ramp_limited_runs_only():
     c = ramp_capacity_curve(classify(pd.DataFrame(rows)), min_runs=1)
     assert len(c) == 1 and c["q_m_bin_vph"].iloc[0] == 1050
     assert c["ramp_cap_vph"].iloc[0] == pytest.approx(310)
+
+
+def test_mainline_jam_counts_as_saturated():
+    """No point queue, but only 1010 of 1290 arrivals per hour served: vehicles are stored in a mainline
+    jam, so the run is saturated (E5b method flaw)."""
+    df = classify(pd.DataFrame([{"q_tot_vph": 1300, "ramp_share": 0.28, "seed": 181, "served_vph": 1010,
+                                 "arrived_vph": 1290, "ramp_served_vph": 338, "queued_end_veh": 6}]))
+    assert not bool(df["demand_limited"].iloc[0])
+
+
+def test_estimate_reports_discharge_and_capacity_drop():
+    rows = [{"q_tot_vph": q, "ramp_share": 0.3, "seed": 1, "served_vph": sv, "arrived_vph": q,
+             "ramp_served_vph": 0.3 * sv, "queued_end_veh": qu}
+            for q, sv, qu in [(1000, 1000, 0), (1200, 1200, 0), (1400, 1100, 50), (1600, 1100, 150)]]
+    est = estimate(classify(pd.DataFrame(rows))).iloc[0]
+    assert est["max_free_served_vph"] == 1200
+    assert est["sat_discharge_vph"] == pytest.approx(1100)
+    assert est["capacity_drop"] == pytest.approx(1 - 1100 / 1200)
+    assert est["sat_ramp_share"] == pytest.approx(0.3)

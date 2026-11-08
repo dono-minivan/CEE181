@@ -16,9 +16,11 @@ Method (same scenario geometry, merge model, and params as the YAML; only demand
   * Served flow = exits during [WARMUP_S, HORIZON_S] / window length (downstream boundary count, i.e.
     what a detector at the exit would see).
   * Queued at the end of the window = point queues + vehicles physically on the ramp lane.
-  * A run is "demand-limited" if the end-of-window queue is below QUEUE_TOL_VEH; otherwise it is
-    "saturated". (A first version also required served >= 0.97 q_tot. Poisson realizations differ from
-    the nominal q_tot by ~4%, so that test failed runs with no queue at all. Dropped, see E4.)
+  * A run is "demand-limited" if the end-of-window queue is below QUEUE_TOL_VEH AND the served flow is
+    at least SERVED_TOL x the flow that actually arrived in the window; otherwise it is "saturated".
+    History: v1 compared served with the nominal q_tot (fails on Poisson shortfalls, E4); v2 used the
+    queue only, which misses vehicles stored in a mainline jam (E5b). v3 (this) uses both, against the
+    realized arrivals. Old run files without arrived_vph fall back to the queue-only test.
   * Breakdown threshold(r) = largest q_tot at which every seed, at that and every lower demand, is
     demand-limited.
   * E4 found that the saturated served flow does NOT level off: the mainline keeps priority and the ramp
@@ -47,6 +49,7 @@ DEFAULT_SCENARIO = ROOT / "configs" / "scenario_s1_onramp.yaml"
 HORIZON_S = 3600.0
 WARMUP_S = 1200.0
 QUEUE_TOL_VEH = 10
+SERVED_TOL = 0.97
 
 
 def steady_run(base: ScenarioConfig, q_tot: float, share: float, seed: int,
@@ -67,8 +70,11 @@ def steady_run(base: ScenarioConfig, q_tot: float, share: float, seed: int,
     queued = int(c["n_queued"] + c["n_on_ramp"])
     m = res.vehicles["merge_s"].to_numpy()
     ramp_served = np.sum((m > warmup) & (m <= horizon)) / (horizon - warmup) * 3600.0
+    a = res.vehicles["arrival_s"].to_numpy()
+    arrived = np.sum((a > warmup) & (a <= horizon)) / (horizon - warmup) * 3600.0
     return {"q_tot_vph": q_tot, "ramp_share": share, "seed": seed, "served_vph": served,
-            "ramp_served_vph": ramp_served, "queued_end_veh": queued,
+            "arrived_vph": arrived, "ramp_served_vph": ramp_served, "queued_end_veh": queued,
+            "on_road_end_veh": int(c["n_on_road"]),
             "min_mainline_speed_mps": res.summary()["min_mainline_speed_mps"]}
 
 
@@ -87,12 +93,17 @@ def sweep(path: Path, demands, shares, seeds, processes: int = 6) -> pd.DataFram
 
 def classify(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["demand_limited"] = df["queued_end_veh"] < QUEUE_TOL_VEH
+    ok = df["queued_end_veh"] < QUEUE_TOL_VEH
+    if "arrived_vph" in df:
+        ok &= df["served_vph"] >= SERVED_TOL * df["arrived_vph"]
+    df["demand_limited"] = ok
     return df
 
 
 def estimate(df: pd.DataFrame) -> pd.DataFrame:
-    """Per ramp share: breakdown threshold and the served flow at the highest demand."""
+    """Per ramp share: breakdown threshold, highest flow served without a queue (max_free_served_vph),
+    the saturated discharge (mean and coefficient of variation of the served flow over saturated runs),
+    the capacity drop 1 - discharge / max_free, and the served flow at the highest demand."""
     out = []
     for r, g in df.groupby("ramp_share"):
         sat = g[~g["demand_limited"]]
@@ -100,10 +111,18 @@ def estimate(df: pd.DataFrame) -> pd.DataFrame:
         ok_q = ok[ok].index
         below = [q for q in ok_q if all(ok.loc[ok.index <= q])]   # threshold: no failure at or below q
         top = g[g["q_tot_vph"] == g["q_tot_vph"].max()]
+        free = g[g["demand_limited"]]
+        dis = float(sat["served_vph"].mean()) if len(sat) else np.nan
+        mx = float(free["served_vph"].max()) if len(free) else np.nan
         out.append({
             "ramp_share": r,
             "breakdown_threshold_vph": float(max(below)) if below else np.nan,
             "n_saturated_runs": int(len(sat)),
+            "max_free_served_vph": mx,
+            "sat_discharge_vph": dis,
+            "sat_discharge_cv": float(sat["served_vph"].std() / dis) if len(sat) > 1 else np.nan,
+            "capacity_drop": 1.0 - dis / mx if len(sat) and len(free) else np.nan,
+            "sat_ramp_share": float((sat["ramp_served_vph"] / sat["served_vph"]).mean()) if len(sat) else np.nan,
             "served_at_max_vph": float(top["served_vph"].mean()),
             "ramp_served_at_max_vph": float(top["ramp_served_vph"].mean()),
         })

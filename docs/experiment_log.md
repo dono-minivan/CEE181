@@ -114,3 +114,27 @@ Single lane (S1 demand) for comparison: gap seeking changes outflow by < 3% (147
 
 - **Interpretation:** Speed matching helps as predicted, and gap seeking helps more than adaptation, which contradicts the prediction. Gap seeking holds ~1160 veh/h when saturated, while adaptation falls back to the 800 veh/h stop-start state at 1800. But the best variant reaches only 0.66 q_c, so criterion 3 (>= 0.85 q_c) fails for every variant, and even 1300 veh/h is not fully served. No full sweep was run. Conclusion: no single-lane merge variant tried so far (E1, E4, E5, E5b) gets anywhere near q_c. The binding limit looks structural: one lane with T = 1.6 s and a = 0.73 m/s^2 cannot absorb merges without large headway losses. Team decision needed (design record section 2).
 - **Method flaw found:** `merge_capacity.steady_run` counts as "queued" only the point queues and the ramp lane. Vehicles stored in a mainline jam are not counted (zipper at 1300: served 1010 with "queued" 6). This can overstate the no-queue threshold whenever the mainline congests. E4 is mostly unaffected (the mainline was fully served in 70 of 87 saturated runs). E5's failing verdict stands, since its thresholds can only be lower. Fix before the next sweep: also require served >= 0.97 x realized arrivals in the window.
+
+## E6 | 2026-11-07 | Measured capacity of the zipper + gap-seeking merge (option 1, team decision)
+- **Decision (team, 2026-11-07):** Option 1. Accept the zipper + gap-seeking merge as the model's bottleneck and state the demand ratio against its MEASURED capacity: X_m = (q_in + lambda_r) / C_m, instead of X = .../q_c. Config `configs/scenario_s3_onramp_zipgap.yaml` (S3).
+- **Method change first:** a run counts as saturated if the end queue is >= 10 veh OR served < 0.97 x the realized arrival flow in the window (fixes the E5b flaw, where vehicles stored in a mainline jam were invisible). Unit test: test_merge_capacity::test_mainline_jam_counts_as_saturated.
+- **Acceptance criteria for S3 as the no-control baseline (fixed before running).** These test bottleneck behavior, not closeness to q_c:
+  1. A capacity exists: within each ramp share the saturated served flow varies little (CV <= 5%), so C_m(r) is well-defined. If C_m differs by more than 15% across shares, X_m uses C_m(r) for the scenario's share.
+  2. The ramp is not starved: saturated ramp share >= 0.5 x min(r, 0.5).
+  3. When saturated, the mainline is congested too (served mainline < its demand), so a meter has something to protect.
+  4. Capacity drop (1 - discharge / highest queue-free flow) between 0 and 20%.
+  5. Verification: zipper + gap safety and conservation tests pass, and time-step sensitivity on one saturated case (dt = 0.05 / 0.1 / 0.2 s) keeps served flow within 3%.
+- **Prediction (written before running):** C_m ~ 1150-1250 veh/h for r >= 0.20, saturated CV ~3-5%, capacity drop ~3-10%, saturated ramp share 0.35-0.45 (zipper alternation, reduced by mainline vehicles that pass without yielding). At r = 0.10 there are fewer merges, so C_m is higher (~1350-1450) and the cross-share spread exceeds 15%, so X_m will need C_m(r). Breakdown threshold ~1100-1200 veh/h. Criterion 5 is the main risk: gap seeking is a feedback law, so its result may depend on dt.
+- **Result** (132 runs, `results/S3_onramp_zipgap_nocontrol_merge_capacity_runs.csv`; estimates in `..._merge_capacity.csv`):
+
+| r | queue-free threshold | highest queue-free flow | saturated discharge C_m (CV) | capacity drop | saturated ramp share |
+|---|---|---|---|---|---|
+| 0.10 | 1100 | 1538 | 1503 (9.8%) | 2.2% | 0.06 |
+| 0.20 | 1200 | 1337 | 1257 (6.6%) | 6.0% | 0.27 |
+| 0.28 | 1100 | 1230 | **1157 (4.4%)** | 5.9% | 0.41 |
+| 0.40 | n/a (one seed at 1000 fails the served test) | 1209 | 1104 (3.4%) | 8.7% | 0.49 |
+
+  - Criterion 1: passed for r = 0.28 and 0.40, FAILED for r = 0.20 and 0.10. At low shares the ramp's slice swings between starved and served, so the discharge is not stable. The spread across shares is 36%, so capacity is share-dependent: C_m(r).
+  - Criterion 2 passed (ramp share 0.06 / 0.27 / 0.41 / 0.49 >= 0.05 / 0.10 / 0.14 / 0.20). Criterion 3 passed: in 81% of saturated runs the mainline got < 95% of its demand. Criterion 4 passed: drop 2-9%. Criterion 5 passed: tests/test_zipper.py (7 tests), and the dt sensitivity at q_tot 1500, r 0.28, seeds 181-182 gives mean served 1188 / 1159 / 1186 veh/h for dt = 0.05 / 0.1 / 0.2 s (max 2.5% from dt = 0.1, no trend).
+- **Interpretation:** The prediction held on C_m (1157, predicted 1150-1250), on the drop, the ramp share and the share dependence. It missed on CV at r = 0.20 (6.6% vs <= 5%). **Verdict: S3 is accepted as the no-control baseline, restricted to a fixed ramp share r = 0.28**, where every criterion holds. Control experiments hold r = 0.28 and vary X_m = q_tot / 1157. Low-share capacity is not claimed. The merge discharges at 0.66 q_c, which is a property of this single-lane IDM merge and must be stated as a limitation.
+- **S3 demand rescaled** to S1's intended X profile with r = 0.28: X_m = 0.92 / 1.03 / 0.63 gives q_tot = 1064 / 1192 / 729 veh/h, split 766+298 / 858+334 / 525+204 (rounded). Seed 181: no breakdown, queues <= 3, TTT 18.6 veh*h, cleared, min gap 0.81 m. This is consistent with E6: 1192 lies between C_m (1157, the discharge after breakdown) and the highest queue-free flow (~1230). The band 1.0 < X_m < ~1.06 is near capacity, where breakdown may or may not happen. That is where a meter is expected to matter, so the control sweep must resolve it with several seeds.

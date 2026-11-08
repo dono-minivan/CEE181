@@ -56,6 +56,13 @@
   #info td { padding: 1px 12px 1px 0; }
   #info td:first-child { color: var(--muted); }
   .hint { color: var(--muted); font-size: 12px; }
+  #ctrl table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  #ctrl td { padding: 1px 12px 1px 0; }
+  #ctrl td:first-child { color: var(--muted); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+  .pill.dark { background: var(--line); color: var(--muted); }
+  .pill.on { background: #d6453a; color: #fff; }
+  .pill.ovr { background: #e8a33b; color: #1d2330; }
 </style>
 </head>
 <body>
@@ -99,6 +106,21 @@
     </div>
   </div>
 
+  <div class="card" id="ctrlCard" hidden>
+    <h2>Ramp meter controller <span class="hint" id="ctrlLabel"></span></h2>
+    <div class="grid" style="margin:0">
+      <div id="ctrl"></div>
+      <div><canvas id="timeline"></canvas>
+        <div class="legend" style="margin-top:4px">
+          <span><span class="chip" style="background:#d6453a;opacity:.35"></span> meter on</span>
+          <span><span class="chip" style="background:#e8a33b;opacity:.6"></span> queue override</span>
+          <span><span class="chip" style="background:var(--accent)"></span> ramp queue (truth, veh)</span>
+          <span><span class="chip" style="background:#d6453a"></span> meter rate (veh/h, right axis)</span>
+          <span class="hint">click to jump</span>
+        </div></div>
+    </div>
+  </div>
+
   <div class="grid">
     <div class="card"><h2>Now</h2><div class="stats" id="stats"></div></div>
     <div class="card"><h2>Selected vehicle</h2><div id="info" class="hint">Click a car in the close-up.</div></div>
@@ -115,6 +137,20 @@ const NL = M.n_lanes || 1;
 const VEH = D.veh.map(r => ({ id: r[0], ramp: r[1] === 1, f0: r[2], runs: r[3],
   xs: Float32Array.from(r[4], v => v / 10), vs: Float32Array.from(r[5], v => v / 10), t: r[6] }));
 const byId = new Map(VEH.map(v => [v.id, v]));
+// ---------- controller (null when the run had none)
+const CT = D.control, DETS = D.detectors || [];
+const CROWS = CT ? CT.rows.map(r => Object.fromEntries(CT.keys.map((k, i) => [k, r[i]]))) : [];
+const RELEASES = VEH.filter(v => v.ramp && v.t[1] !== null).map(v => v.t[1]).sort((a, b) => a - b);
+function ctrlAt(time) {           // last decision issued at or before `time`
+  let lo = 0, hi = CROWS.length - 1, best = null;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (CROWS[m].time_s <= time + 1e-9) { best = CROWS[m]; lo = m + 1; } else hi = m - 1; }
+  return best;
+}
+function releasedWithin(time, win) {
+  let lo = 0, hi = RELEASES.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (RELEASES[m] < time - win) lo = m + 1; else hi = m; }
+  return lo < RELEASES.length && RELEASES[lo] <= time;
+}
 
 // ---------- colors
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -128,7 +164,7 @@ document.getElementById("title").textContent = `${M.scenario_id}: animated simul
 document.getElementById("subtitle").textContent =
   `demand ${M.demand_id} · params ${M.param_set} · seed ${M.seed} · dt ${M.dt_s} s · ` +
   `segment ${M.L} m, ${NL} lane${NL > 1 ? "s" : ""}` + (R ? ` · on-ramp merge ${R.merge_start}–${R.merge_end} m` : " · no ramp") +
-  ` · computed capacity ${M.q_c_vph} veh/h`;
+  ` · computed capacity ${M.q_c_vph} veh/h` + (CT ? ` · ramp control: ${CT.label}` : "");
 const fmtT = s => { s = Math.max(0, s); const m = Math.floor(s / 60), r = Math.floor(s % 60); return `${m}:${String(r).padStart(2, "0")}`; };
 const S = D.summary;
 document.getElementById("summary").innerHTML = [
@@ -218,13 +254,32 @@ function drawRoad(V, detail) {
     ctx.setLineDash([6, 6]);
     ctx.beginPath(); ctx.moveTo(sx(R.merge_start), yM + LW / 2); ctx.lineTo(sx(R.merge_end), yM + LW / 2); ctx.stroke();
     ctx.setLineDash([]);
-    // ramp entrance stop line + signal head (no control yet: always green)
+    // ramp entrance stop line + signal head. No controller: always green. Controller: dark (meter off)
+    // or red, with a green flash for 1 s after each release (one vehicle per green).
     const ex = sx(R.entrance), ey = rampY(R.entrance);
     ctx.strokeStyle = css("--marking"); ctx.lineWidth = detail ? 3 : 2;
     ctx.beginPath(); ctx.moveTo(ex, ey - LW / 2); ctx.lineTo(ex, ey + LW / 2); ctx.stroke();
-    const r = detail ? 6 : 3.5;
-    ctx.fillStyle = "#222"; ctx.fillRect(ex - r - 2, ey + LW / 2 + 3, 2 * r + 4, 2 * r + 4);
-    ctx.fillStyle = "#29c463"; ctx.beginPath(); ctx.arc(ex, ey + LW / 2 + 5 + r, r, 0, 7); ctx.fill();
+    const r = detail ? 6 : 3.5, st = CT ? ctrlAt(t) : null;
+    const on = st && st.action === "set_rate";
+    ctx.fillStyle = "#222"; ctx.fillRect(ex - r - 2, ey + LW / 2 + 3, 2 * r + 4, 4 * r + 6);
+    const top = ey + LW / 2 + 5 + r, bot = top + 2 * r + 2;
+    const green = !CT || (on && releasedWithin(t, 1.0));
+    ctx.fillStyle = on && !green ? "#e5463b" : "#4a2a2a"; ctx.beginPath(); ctx.arc(ex, top, r, 0, 7); ctx.fill();
+    ctx.fillStyle = green ? "#29c463" : "#24402e"; ctx.beginPath(); ctx.arc(ex, bot, r, 0, 7); ctx.fill();
+    // detectors: short yellow bars across their lane, labeled in the close-up
+    for (const d of DETS) {
+      const lanes = d.lane === null ? [...Array(NL).keys()] : [d.lane];
+      for (const l of lanes) {
+        const X = sx(d.x); if (X < -20 || X > w + 20) continue;
+        const Y = l < 0 ? (d.x < R.merge_start ? rampY(d.x) : yLane(-1)) : yLane(l);
+        ctx.strokeStyle = "#f2c230"; ctx.lineWidth = detail ? 3 : 2;
+        ctx.beginPath(); ctx.moveTo(X, Y - LW * 0.42); ctx.lineTo(X, Y + LW * 0.42); ctx.stroke();
+      }
+      if (detail) { const X = sx(d.x); if (X > -20 && X < w + 20) { ctx.fillStyle = "#c99a10";
+        ctx.font = "11px system-ui, sans-serif"; ctx.textAlign = "center";
+        const Y = d.lane !== null && d.lane < 0 ? (d.x < R.merge_start ? rampY(d.x) : yLane(-1)) + LW * 0.9 : yTop - 4;
+        ctx.fillText(d.id, X, Y); } }
+    }
   } else {
     ctx.beginPath(); ctx.moveTo(sx(0), yM + LW / 2); ctx.lineTo(sx(M.L), yM + LW / 2); ctx.stroke();
   }
@@ -242,7 +297,11 @@ function drawRoad(V, detail) {
     label("lane end", R.merge_end, 14);
     if (detail) {
       const ex = sx(R.entrance), ey = rampY(R.entrance);
-      if (ex > -40 && ex < w + 40) { ctx.textAlign = "left"; ctx.fillText("ramp entrance (meter site, no control)", ex + 12, ey + LW / 2 + 16); }
+      const st = CT ? ctrlAt(t) : null;
+      const txt = !CT ? "ramp entrance (meter site, no control)"
+        : st && st.action === "set_rate" ? `ramp meter ON: ${Math.round(st.rate_cmd_vph)} veh/h (1 car per green)`
+        : `ramp meter OFF (dark)${st && st.override ? " — queue override" : ""}`;
+      if (ex > -40 && ex < w + 40) { ctx.textAlign = "left"; ctx.fillText(txt, ex + 14, ey + LW / 2 + 16); }
     }
   }
 }
@@ -325,7 +384,67 @@ function render() {
     ["mean mainline speed", isNaN(agg.mean) ? "–" : `${(agg.mean * MPH).toFixed(1)} mph`],
   ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
   renderInfo(fr, a);
+  if (CT) renderCtrl();
 }
+
+// ---------- controller panel + timeline
+const tlC = document.getElementById("timeline");
+if (CT) { document.getElementById("ctrlCard").hidden = false;
+  document.getElementById("ctrlLabel").textContent = `(${CT.label}; occupancy detector ${CT.occ_sensor}; decisions every 30 s from detector data only)`; }
+const QMAX = Math.max(5, ...C.qr), RMAX = 900;
+function renderCtrl() {
+  const st = ctrlAt(t), el = document.getElementById("ctrl");
+  const n = (x, d = 0, u = "") => x === null || x === undefined ? "– (missing)" : `${(+x).toFixed(d)}${u}`;
+  if (!st) { el.innerHTML = '<span class="hint">no decision yet</span>'; }
+  else {
+    const pill = st.override ? '<span class="pill ovr">OVERRIDE: dark</span>'
+      : st.action === "set_rate" ? `<span class="pill on">ON ${Math.round(st.rate_cmd_vph)} veh/h</span>` : '<span class="pill dark">dark (off)</span>';
+    el.innerHTML = `<table>
+      <tr><td>decision issued</td><td>${fmtT(st.time_s)} (${st.time_s.toFixed(0)} s) · applies until next update</td></tr>
+      <tr><td>command</td><td>${pill}</td></tr>
+      <tr><td>reason</td><td>${st.reason}</td></tr>
+      <tr><td>1 · occupancy ${CT.occ_sensor}</td><td>${st.occ === null ? (CT.mode === "alinea" ? "– (missing)" : "not used") : (100 * st.occ).toFixed(1) + " %"}</td></tr>
+      <tr><td>1 · ramp demand (last 30 s)</td><td>${n(st.ramp_demand_meas_vph, 0, " veh/h")} · smoothed ${n(st.ramp_demand_smoothed_vph, 0, " veh/h")}</td></tr>
+      <tr><td>1 · ramp queue (counted)</td><td>${n(st.queue_est_veh, 0, " veh")} <span class="hint">truth now: ${C.qr[Math.min(NF - 1, Math.floor(t / FDT))]}</span></td></tr>
+      <tr><td>2 · queue forecast (+60 s)</td><td>${n(st.queue_fc_veh, 1, " veh")} vs limit 35</td></tr>
+      <tr><td>3 · control law rate</td><td>${n(st.r_law_vph, 0, " veh/h")}</td></tr>
+    </table>`;
+  }
+  drawTimeline();
+}
+function drawTimeline() {
+  const dpr = window.devicePixelRatio || 1, w = tlC.clientWidth, h = 150;
+  if (tlC.width !== Math.round(w * dpr)) { tlC.style.height = h + "px"; tlC.width = Math.round(w * dpr); tlC.height = Math.round(h * dpr); }
+  const ctx = tlC.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const L = 34, Rr = 40, T = 8, B = 20, pw = w - L - Rr, ph = h - T - B;
+  const X = s => L + s / TMAX * pw, Yq = q => T + ph - q / QMAX * ph, Yr = r => T + ph - r / RMAX * ph;
+  ctx.fillStyle = css("--panel"); ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < CROWS.length; i++) {          // meter state bands
+    const a = CROWS[i], b = CROWS[i + 1], t1 = b ? b.time_s : TMAX;
+    if (a.override) { ctx.fillStyle = "rgba(232,163,59,.55)"; ctx.fillRect(X(a.time_s), T, X(t1) - X(a.time_s), ph); }
+    else if (a.action === "set_rate") { ctx.fillStyle = "rgba(214,69,58,.18)"; ctx.fillRect(X(a.time_s), T, X(t1) - X(a.time_s), ph); }
+  }
+  ctx.strokeStyle = css("--line"); ctx.lineWidth = 1; ctx.strokeRect(L, T, pw, ph);
+  ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.5; ctx.beginPath();
+  for (let i = 0; i < NF; i++) { const x = X(i * FDT), y = Yq(C.qr[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+  ctx.strokeStyle = "#d6453a"; ctx.lineWidth = 1.5; ctx.beginPath(); let pen = false;
+  for (let i = 0; i < CROWS.length; i++) {
+    const a = CROWS[i], t1 = CROWS[i + 1] ? CROWS[i + 1].time_s : TMAX;
+    if (a.action === "set_rate") { const y = Yr(a.rate_cmd_vph);
+      if (!pen) { ctx.moveTo(X(a.time_s), y); pen = true; } else ctx.lineTo(X(a.time_s), y); ctx.lineTo(X(t1), y); }
+    else pen = false;
+  } ctx.stroke();
+  ctx.fillStyle = css("--muted"); ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "right"; ctx.fillText(String(QMAX), L - 4, T + 9); ctx.fillText("0", L - 4, T + ph);
+  ctx.textAlign = "left"; ctx.fillText(String(RMAX), L + pw + 4, T + 9); ctx.fillText("0", L + pw + 4, T + ph);
+  ctx.textAlign = "center";
+  for (let s = 0; s <= TMAX; s += 600) ctx.fillText(fmtT(s), X(s), h - 5);
+  ctx.strokeStyle = css("--ink"); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(X(t), T); ctx.lineTo(X(t), T + ph); ctx.stroke();
+}
+tlC.addEventListener("pointerdown", e => {
+  const r = tlC.getBoundingClientRect(), L = 34, pw = r.width - 34 - 40;
+  t = Math.max(0, Math.min(TMAX, (e.clientX - r.left - L) / pw * TMAX));
+});
 
 function renderInfo(fr, a) {
   const el = document.getElementById("info");

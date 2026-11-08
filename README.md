@@ -25,7 +25,15 @@ Animated viewer (mainline, on-ramp, queues; vehicles colored by speed; click a c
     python -m tmc.viz configs/scenario_s0_single_lane.yaml --open
     python -m tmc.viz configs/scenario_s2_twolane_onramp.yaml --open   # two lanes + lane changing
 
-This writes `results/<scenario_id>_viewer.html`, a self-contained file. Add `#t=1200&zoom=300&x=1600` to the URL to open at a given time, width, and position.
+This writes `results/<scenario_id>_viewer.html`, a self-contained file.
+
+Ramp control in the viewer (meter signal, detectors, the controller's decision at each moment, and a timeline of ramp queue and meter rate; E7 demand at a chosen peak X_m):
+
+    python -m tmc.viz --e7 1.35 --control alinea:0.20 --open
+    python -m tmc.viz --e7 1.35 --control none --open        # same demand and seed, no signal
+    python -m tmc.viz --e7 1.10 --control pretimed:800 --open
+    python -m tmc.viz configs/scenario_s3_onramp_zipgap.yaml --control alinea:0.20 --seed 182 --open
+ Add `#t=1200&zoom=300&x=1600` to the URL to open at a given time, width, and position.
 
 Ramp control (S3 baseline: zipper + gap-seeking merge, detector-only controllers):
 

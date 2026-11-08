@@ -1,8 +1,16 @@
-"""Animated viewer: python -m tmc.viz [scenario.yaml] [--open]
+"""Animated viewer:
+    python -m tmc.viz [scenario.yaml] [--control MODE[:PARAM]] [--open]
+    python -m tmc.viz --e7 X_PEAK [--seed N] [--control MODE[:PARAM]] [--open]
 
-Runs a scenario and writes results/<scenario_id>_viewer.html, a self-contained page (no server, no
-internet) that animates the mainline lanes, lane changes, on-ramp, acceleration lane, and queues with
-vehicles colored by speed.
+  e.g. python -m tmc.viz --e7 1.35 --control alinea:0.20 --open
+       python -m tmc.viz --e7 1.10 --control pretimed:800 --open
+       python -m tmc.viz configs/scenario_s3_onramp_zipgap.yaml --control none --open
+
+Runs a scenario and writes results/<scenario_id>[_<controller>]_viewer.html, a self-contained page (no
+server, no internet) that animates the mainline lanes, lane changes, on-ramp, acceleration lane, and queues
+with vehicles colored by speed. With a ramp controller it also shows the meter signal (dark / red, green
+flash at each release), the detectors, the controller's decision trace at the current time, and a timeline
+of the ramp queue and meter rate. --e7 builds the E7 demand profile (tmc.evaluate) at the given X_peak.
 
 Display-only conventions (not model behavior):
   * Vehicles in the point queues (mainline entrance, ramp entrance) are drawn as grey cars stacked
@@ -20,8 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
-from tmc.idm import capacity
-from tmc.network import SimResult, run_scenario
+from tmc.idm import capacity, load_params
+from tmc.network import FreewaySegment, ScenarioConfig, SimResult
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = Path(__file__).with_name("viewer_template.html")
@@ -32,7 +40,27 @@ def _r(x, nd=1):
     return None if x is None or not np.isfinite(x) else round(float(x), nd)
 
 
-def export(res: SimResult) -> dict:
+TRACE_KEYS = ["time_s", "occ", "ramp_demand_meas_vph", "ramp_demand_smoothed_vph", "queue_est_veh",
+              "queue_fc_veh", "r_law_vph", "override", "action", "rate_cmd_vph", "reason"]
+
+
+def _clean(x):
+    if x is None or isinstance(x, (bool, np.bool_, str)):
+        return bool(x) if isinstance(x, np.bool_) else x
+    x = float(x)
+    return None if not np.isfinite(x) else round(x, 4)
+
+
+def export_control(res: SimResult, label: str | None) -> dict | None:
+    tr = res.control_trace
+    if tr is None or tr.empty:
+        return None
+    rows = [[_clean(r[k]) for k in TRACE_KEYS] for r in tr.to_dict("records")]
+    return {"label": label or str(tr["mode"].iloc[0]), "mode": str(tr["mode"].iloc[0]),
+            "occ_sensor": str(tr["occ_sensor"].iloc[0]), "keys": TRACE_KEYS, "rows": rows}
+
+
+def export(res: SimResult, control_label: str | None = None) -> dict:
     cfg, p = res.config, res.params
     dt_f = cfg.record_every_s
     tr = res.trajectories.sort_values(["vehicle_id", "time_s"])
@@ -73,24 +101,60 @@ def export(res: SimResult) -> dict:
             "exited": c["n_exited"].astype(int).tolist(), "arrived": c["n_arrived"].astype(int).tolist(),
         },
         "summary": {k: (_r(v, 2) if isinstance(v, float) else v) for k, v in res.summary().items()},
+        "control": export_control(res, control_label),
+        "detectors": [{"id": d.sensor_id, "x": d.position_m, "lane": d.lane_id}
+                      for d in cfg.detectors if d.kind == "loop"],
     }
 
 
-def write_viewer(res: SimResult, out_path: Path) -> Path:
-    data = json.dumps(export(res), separators=(",", ":"))
+def write_viewer(res: SimResult, out_path: Path, control_label: str | None = None) -> Path:
+    data = json.dumps(export(res, control_label), separators=(",", ":"))
     html = TEMPLATE.read_text(encoding="utf-8")
     html = html.replace("/*__DATA__*/null", data).replace("__TITLE__", f"{res.config.scenario_id} viewer")
     out_path.write_text(html, encoding="utf-8")
     return out_path
 
 
+def _opt(argv: list[str], name: str):
+    return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else None
+
+
+def parse_control(spec: str | None):
+    """'none' | 'pretimed:RATE' | 'alinea:O_SET' -> Controller (None if spec is None)."""
+    if spec is None:
+        return None
+    from tmc.control import Controller
+    mode, _, param = spec.partition(":")
+    if mode == "none":
+        return Controller("none")
+    if mode == "pretimed":
+        return Controller("pretimed", rate_vph=float(param or 400))
+    if mode == "alinea":
+        return Controller("alinea", o_set=float(param or 0.20))
+    raise SystemExit(f"unknown --control {spec!r}; use none, pretimed:RATE or alinea:O_SET")
+
+
 def main(argv: list[str]) -> None:
-    args = [a for a in argv if not a.startswith("--")]
-    scenario = Path(args[0]) if args else DEFAULT_SCENARIO
-    res = run_scenario(scenario)
-    out = ROOT / "results" / f"{res.config.scenario_id}_viewer.html"
+    vals = {_opt(argv, n) for n in ("--control", "--e7", "--seed")}
+    args = [a for a in argv if not a.startswith("--") and a not in vals]
+    ctrl = parse_control(_opt(argv, "--control"))
+    if _opt(argv, "--e7") is not None:
+        from tmc.evaluate import build_config, merge_capacity
+        cfg = build_config(float(_opt(argv, "--e7")), int(_opt(argv, "--seed") or 181), merge_capacity())
+        cfg.record_every_s = 1.0
+    else:
+        cfg = ScenarioConfig.from_yaml(Path(args[0]) if args else DEFAULT_SCENARIO)
+        if _opt(argv, "--seed") is not None:
+            cfg.seed = int(_opt(argv, "--seed"))
+    if ctrl is not None:
+        cfg.control = None
+    res = FreewaySegment(load_params(cfg.param_set), cfg, controller=ctrl).run()
+    label = ctrl.label if ctrl is not None else (cfg.control or {}).get("mode")
+    suffix = f"_{ctrl.label}" if ctrl is not None else ""
+    out = ROOT / "results" / f"{res.config.scenario_id}_s{cfg.seed}{suffix}_viewer.html" if ctrl is not None \
+        else ROOT / "results" / f"{res.config.scenario_id}_viewer.html"
     out.parent.mkdir(exist_ok=True)
-    write_viewer(res, out)
+    write_viewer(res, out, label)
     print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
     if "--open" in argv:
         webbrowser.open(out.as_uri())

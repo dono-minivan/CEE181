@@ -69,6 +69,9 @@ class RampConfig:
     gap_kv: float = 0.6                  # gap-seeking speed gain, 1/s
     anticipation_m: float = 0.0          # lane-0 drivers from merge_start - this to merge_end count the nearest
                                          # ramp vehicle ahead as a leader in lane-change decisions (0 = off)
+    courtesy: str = "none"               # "zipper": lane-0 would-be follower yields (<= courtesy_b) to the ramp
+                                         # vehicle ahead of it, and each mainline driver lets in at most one
+    courtesy_b_mps2: float | None = None # max courtesy braking (None -> IDM b)
 
     @property
     def entrance_m(self) -> float:
@@ -127,7 +130,11 @@ class ScenarioConfig:
                 gap_kx=float(r.get("gap_kx", 0.1)),
                 gap_kv=float(r.get("gap_kv", 0.6)),
                 anticipation_m=float(r.get("anticipation_m", 0.0)),
+                courtesy=str(r.get("courtesy", "none")),
+                courtesy_b_mps2=r.get("courtesy_b_mps2"),
             )
+            if ramp.courtesy not in ("none", "zipper"):
+                raise ValueError(f"ramp.courtesy must be 'none' or 'zipper', got {ramp.courtesy!r}")
         lc = d.get("lane_change") or {}
         lane_change = LaneChangeConfig(
             enabled=bool(lc.get("enabled", True)),
@@ -309,6 +316,7 @@ class FreewaySegment:
         self.merge_s = np.full(n, np.nan)
         self.exit_s = np.full(n, np.nan)
         self.last_lc = np.full(n, -np.inf)   # time of each vehicle's last lane change or merge
+        self.let_in = np.zeros(n, dtype=bool)  # zipper: this mainline vehicle already let a ramp vehicle in
         self.entry_s[:n_init] = 0.0
 
         self.lanes = [_Lane() for _ in range(cfg.n_lanes)]
@@ -403,6 +411,8 @@ class FreewaySegment:
                 vid = int(r.ids[i])
                 m.insert(j, vid, xr, vr)
                 r.remove_at(i)
+                if j + 1 < len(m):
+                    self.let_in[m.ids[j + 1]] = True   # its new follower has now let one in
                 self.merge_s[vid] = t
                 self.last_lc[vid] = t
                 self.lc_log.append((t, vid, RAMP, MAIN, xr, vr, "merge"))
@@ -592,6 +602,25 @@ class FreewaySegment:
             if a_y >= -p.b:
                 acc_m[j] = min(acc_m[j], a_y)
 
+    def _courtesy(self, acc_m: np.ndarray) -> None:
+        """Zipper courtesy (cooperative merge after Hidas 2005), ramp.courtesy == "zipper". For each ramp
+        vehicle in the merge zone, its would-be lane-0 follower treats it as an extra leader if the gap is
+        > 0, the IDM response needs braking no harder than courtesy_b (default b), and that follower has not
+        already let a ramp vehicle in. Each mainline driver yields to at most one merging vehicle, so
+        courtesy braking is bounded and saturated merging alternates. Modifies acc_m in place."""
+        p, r, m, rc = self.p, self.rlane, self.main, self.ramp
+        b_c = rc.courtesy_b_mps2 if rc.courtesy_b_mps2 is not None else p.b
+        for i in np.flatnonzero(r.x >= rc.merge_start_m):
+            j = m.slot(r.x[i])  # would-be follower
+            if j >= len(m) or self.let_in[m.ids[j]]:
+                continue
+            s = r.x[i] - m.x[j] - p.length
+            if s <= 0:
+                continue
+            a_y = float(acceleration(m.v[j], s, m.v[j] - r.v[i], p))
+            if a_y >= -b_c:
+                acc_m[j] = min(acc_m[j], a_y)
+
     def _accelerations(self):
         """Accelerations of every mainline lane and the ramp lane from the current state.
         Returns (list of per-lane arrays, ramp array, list of per-lane gaps, ramp gaps)."""
@@ -605,6 +634,8 @@ class FreewaySegment:
         acc_r = self._ramp_accelerations(s_r, dv_r) if self.ramp else np.empty(0)
         if self.ramp and self.ramp.cooperative_yield:
             self._yield(accs[MAIN])
+        if self.ramp and self.ramp.courtesy == "zipper":
+            self._courtesy(accs[MAIN])
         return accs, acc_r, gaps, s_r
 
     # -- main loop

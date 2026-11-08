@@ -27,13 +27,22 @@ Animated viewer (mainline, on-ramp, queues; vehicles colored by speed; click a c
 
 This writes `results/<scenario_id>_viewer.html`, a self-contained file. Add `#t=1200&zoom=300&x=1600` to the URL to open at a given time, width, and position.
 
+Ramp control (S3 baseline: zipper + gap-seeking merge, detector-only controllers):
+
+    python -m tmc.control configs/scenario_s3_onramp_zipgap.yaml alinea 0.10     # prints the decision trace
+    python -m tmc.control configs/scenario_s3_onramp_zipgap.yaml pretimed 400
+    python -m tmc.evaluate --quick       # small control comparison (~1 min)
+    python -m tmc.evaluate               # full E7 sweep (writes results/E7_*.csv and E7_ttt_vs_X.png)
+    python -m tmc.merge_capacity configs/scenario_s3_onramp_zipgap.yaml --from-csv   # E6 capacity estimate
+
 ## Tests
     pytest
 
 ## Status
-IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Virtual detectors (loops, stations, ramp demand counter) with a count audit. Not yet built: estimation/forecast, controllers.
+IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Virtual detectors (loops, stations, ramp demand counter) with a count audit. Merge-capacity measurement (E4, E6); no-control baseline S3 (zipper + gap-seeking merge, X_m stated against its measured capacity C_m). Ramp meter with no-signal / pre-timed / ALINEA control, a forecast-based queue override and decision traces; evaluation sweep (E7). Not yet built: the final pathway (CAV or signal, undecided).
 
 ## Known limitations
+- The S3 merge discharges C_m ~ 1157 veh/h at ramp share 0.28 (0.66 of the computed IDM capacity q_c). Control results are stated in X_m = demand / C_m and hold only for r = 0.28 (E6).
 - The on-ramp merge model is provisional. Single lane: the merge discharges ~1430-1490 veh/h, below q_c (E1). Two lanes: the merge deadlocks once a ramp vehicle stops at the lane end (E2); the optional gap-seeking and anticipation fixes reach at most 88% of 2 q_c (E3), so the two-lane option is parked. Not a valid no-control baseline yet.
 - Lane changes are instantaneous (no lateral motion). MOBIL parameters are still to be verified against the primary source.
 - Deterministic IDM drivers (no reaction time or noise). Randomness comes only from arrivals.

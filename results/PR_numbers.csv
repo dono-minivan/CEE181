@@ -1,0 +1,3 @@
+case,ttt_veh_h,ramp_wait_veh_h,peak_ramp_queue,congested_min_M_mrg,min_mainline_speed_mph,cleared,unmet
+X_m=1.35 seed=181 No signal,27.68296853364788,0.0224293762096182,2,11.0,0.0,True,0
+"X_m=1.35 seed=181 ALINEA, o_set = 20%",26.343305884223597,1.2923460428762847,14,9.5,0.0,True,0

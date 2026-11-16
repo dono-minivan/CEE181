@@ -57,4 +57,11 @@ IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, fr
 - The entrance discharges at most about q_c. Mainline demand above that queues at the entrance.
 
 ## AI-use disclosure
-Claude Code drafted the initial simulator and tests (2026-11-05) and the multi-lane / MOBIL extension, its tests, and the E2 diagnostics (2026-11-07). Verification and review are recorded in `docs/design_record.md` section 8.
+Claude Code (AI assistant) drafted code, tests, and documentation drafts in this repo. The team reviews each piece and must be able to explain it. What was drafted, and how it was checked, is logged in `docs/design_record.md` section 8:
+
+- 2026-11-05: IDM simulator, entry/exit boundaries, on-ramp merge, example run, verification tests, animated viewer.
+- 2026-11-07: multi-lane mainline with MOBIL lane changing, gap-seeking/anticipation switches, E2/E3 diagnostics; virtual detectors and count-audit tests; merge-capacity tool (E4); zipper courtesy merge (E5).
+- 2026-11-08: merge-capacity revision and S3 baseline (E6); ramp meter, `estimation.py`, `forecast.py`, `control.py`, `evaluate.py` and tests (E7); viewer support for the meter signal, detectors and decision traces.
+- 2026-11-15: `report_figures.py` (progress-report figures, `results/PR_*`, congestion-minutes definition).
+
+Earlier (Intermediate 1), AI was used to gather papers, format deliverables, summarize topics, and draft verification/fallback plans. No AI output is accepted as a result until it passes the verification tests and the checks recorded in the design record.

@@ -10,7 +10,7 @@ One continuing project: a bounded freeway segment (arrivals, exits, a bottleneck
 Our Intermediate 1 question: is actuated ramp metering better than pre-timed or no signal at all demand levels? Prediction: actuated wins only in a middle band near capacity (demand ratio X = (q_in + lambda_r)/q_c about 0.9 to 1.05). Better = lower total travel time (veh*h), including ramp waiting, run until residual queues clear, ramp queue within n_max. Also report mainline throughput, peak ramp queue, unmet demand, min mainline speed.
 
 ## Open decisions (ask the user, don't guess)
-- Final pathway: CAV or signal (to be chosen). Ramp metering is only the shared TMC foundation and does not by itself satisfy the final pathway.
+- Final pathway: tentatively CAV (team, 2026-11-15; subject to change). Ramp metering is only the shared TMC foundation and does not by itself satisfy the final pathway.
 - Role split. Guide examples: A = vehicle dynamics + verification, B = arrivals/bottleneck/detectors. Fill in `docs/contributions.md`.
 - Lane changing (mentioned as next step in the report) is optional. Start single-lane, verify, then extend.
 

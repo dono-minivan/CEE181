@@ -47,7 +47,7 @@ Ramp control (S3 baseline: zipper + gap-seeking merge, detector-only controllers
     pytest
 
 ## Status
-IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Virtual detectors (loops, stations, ramp demand counter) with a count audit. Merge-capacity measurement (E4, E6); no-control baseline S3 (zipper + gap-seeking merge, X_m stated against its measured capacity C_m). Ramp meter with no-signal / pre-timed / ALINEA control, a forecast-based queue override and decision traces; evaluation sweep (E7). Not yet built: the final pathway (CAV or signal, undecided).
+IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Virtual detectors (loops, stations, ramp demand counter) with a count audit. Merge-capacity measurement (E4, E6); no-control baseline S3 (zipper + gap-seeking merge, X_m stated against its measured capacity C_m). Ramp meter with no-signal / pre-timed / ALINEA control, a forecast-based queue override and decision traces; evaluation sweep (E7). Not yet built: the final pathway (tentatively CAV, subject to change).
 
 ## Known limitations
 - The S3 merge discharges C_m ~ 1157 veh/h at ramp share 0.28 (0.66 of the computed IDM capacity q_c). Control results are stated in X_m = demand / C_m and hold only for r = 0.28 (E6).

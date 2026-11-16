@@ -6,8 +6,9 @@
 Everything is recomputed from the package (idm.capacity, evaluate.build_config, the E6/E7 CSVs).
 Congestion definition used for Fig. PR5 / PR_numbers (proposed for Section 1):
     a 30-s interval at detector M_mrg is congested when its mean speed < v_c (computed IDM critical
-    speed, 18.6 m/s) OR its occupancy > 15 %, and a congestion episode needs >= 2 consecutive such
-    intervals (60 s).
+    speed, 18.6 m/s) OR its occupancy > the critical occupancy o_c = k_c (l + L_loop) (computed,
+    ~18 %), and a congestion episode needs >= 2 consecutive such intervals (60 s).
+    Team decision 2026-11-15 (replaces a provisional 15 % threshold), see docs/design_record.md.
 """
 from __future__ import annotations
 
@@ -24,15 +25,19 @@ from tmc.idm import capacity, equilibrium_flow, load_params
 from tmc.network import FreewaySegment, ScenarioConfig
 
 RES = ROOT / "results"
-OCC_CONG = 0.15
 N_CONSEC = 2
 MI = 1609.344
 
 
-def congested_intervals(obs: pd.DataFrame, sensor: str, v_c: float) -> pd.DataFrame:
+def critical_occupancy(cap: dict, p, loop_m: float = 2.0) -> float:
+    """o_c = k_c (l + L_loop): fraction of time a loop is occupied at the IDM capacity state."""
+    return cap["k_c_veh_per_m"] * (p.length + loop_m)
+
+
+def congested_intervals(obs: pd.DataFrame, sensor: str, v_c: float, occ_c: float) -> pd.DataFrame:
     o = obs[obs["sensor_id"] == sensor].sort_values("interval_end_s").copy()
     slow = o["mean_speed_mps"].astype(float) < v_c          # NaN (no vehicles) -> False
-    full = o["occupancy"].astype(float) > OCC_CONG
+    full = o["occupancy"].astype(float) > occ_c
     raw = (slow | full).to_numpy()
     flag = np.zeros_like(raw)
     run = 0
@@ -140,7 +145,7 @@ def fig_compare(c_m, cap, path: Path, x_peak=1.35, seed=181) -> list[dict]:
         cfg, res = run(x_peak, mode, param, seed, c_m)
         out.append((title, cfg, res))
         s = res.summary()
-        cong = congested_intervals(res.observations, "M_mrg", v_c)
+        cong = congested_intervals(res.observations, "M_mrg", v_c, cap["occ_c"])
         rows.append({"case": f"X_m={x_peak} seed={seed} {title}", "ttt_veh_h": s["total_travel_time_veh_h"],
                      "ramp_wait_veh_h": s["total_ramp_wait_veh_h"], "peak_ramp_queue": s["peak_ramp_queue_veh"],
                      "congested_min_M_mrg": cong["congested"].sum() * 0.5,
@@ -202,7 +207,7 @@ def congestion_table(c_m, cap, seeds=(181, 182, 183, 184), xs=(1.10, 1.20, 1.35)
                 cfg = build_config(x, sd, c_m)
                 cfg.record_every_s = 30.0
                 res = FreewaySegment(load_params(cfg.param_set), cfg, controller=make(mode, param)).run()
-                mins.append(float(congested_intervals(res.observations, "M_mrg", cap["v_c_mps"])["congested"].sum() * 0.5))
+                mins.append(float(congested_intervals(res.observations, "M_mrg", cap["v_c_mps"], cap["occ_c"])["congested"].sum() * 0.5))
             rows.append({"x_peak": x, "mode": mode if param is None else f"alinea_{param:.2f}",
                          "congested_min_mean": float(np.mean(mins)), "congested_min_by_seed": mins})
     return rows
@@ -212,16 +217,20 @@ def main(argv: list[str]) -> None:
     """No args: figures. `congestion X`: congestion minutes for one X_peak (appends to the CSV)."""
     p = load_params("baseline")
     cap = capacity(p)
+    s3 = ScenarioConfig.from_yaml(ROOT / "configs" / "scenario_s3_onramp_zipgap.yaml")
+    loop = next(d for d in s3.detectors if d.sensor_id == "M_mrg").field_length_m
+    cap["occ_c"] = critical_occupancy(cap, p, loop)
     c_m = merge_capacity()
     if argv and argv[0] == "congestion":
         out = RES / "PR_congestion_minutes.csv"
+        print(f"critical occupancy o_c = {cap['occ_c']:.4f}")
         new = pd.DataFrame(congestion_table(c_m, cap, xs=tuple(float(x) for x in argv[1:])))
+        new["occ_threshold"] = round(cap["occ_c"], 4)
         if out.exists():
             new = pd.concat([pd.read_csv(out), new]).drop_duplicates(["x_peak", "mode"], keep="last")
         new.to_csv(out, index=False)
         print(new.to_string())
         return
-    s3 = ScenarioConfig.from_yaml(ROOT / "configs" / "scenario_s3_onramp_zipgap.yaml")
     fig_schematic(s3, RES / "PR1_segment_layout.png")
     fig_fd(p, cap, c_m, RES / "PR2_fundamental_diagram.png")
     fig_merge_capacity(RES / "PR3_merge_capacity.png")

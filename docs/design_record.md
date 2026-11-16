@@ -3,6 +3,10 @@
 ## 1. Question and prediction
 Is actuated freeway on-ramp metering better than pre-timed or no signal at all volumes? Prediction: actuated wins only in a middle band near capacity (X about 0.9 to 1.05). See Intermediate 1 for the full reasoning and "what would change our conclusion".
 
+**Evaluation definitions (team decision 2026-11-15; set after E7, so they apply as fixed rules from E8 onward):**
+- *Better.* A control mode is better than another at a demand level when its mean TTT over seeds 181-184 is at least 2% lower AND it is lower in at least 3 of 4 seed-paired runs. Any win is confirmed on held-out seeds 185-188. Why 2%: changing dt (0.05/0.1/0.2 s) moves TTT by < 1% (section 4), so 2% is above numerical noise.
+- *Congested interval.* A 30-s interval at M_mrg (50 m upstream of the merge) is congested when its mean speed < v_c (computed IDM critical speed, 18.6 m/s = 41.5 mph) OR its occupancy > o_c, the critical occupancy o_c = k_c (l + L_loop) = 0.0261 veh/m x 7 m = 18.3% (computed in `tmc.report_figures.critical_occupancy`, reported as 18%). A congestion episode needs >= 2 consecutive congested intervals (60 s). o_c was chosen over a provisional data-based 15% (gap between free-flow 5-6% and congested 16-50% at M_mrg in E7) so the threshold traces to theory. Check: the E7 congested-minutes table is identical with 15% and 18% (`results/PR_congestion_minutes.csv`).
+
 ## 2. Model and assumptions
 IDM, ballistic update, parameters in `configs/idm_baseline.yaml`. Limitations: no reaction time (ACC-like), deterministic driving (stochastic only in arrivals).
 
@@ -62,7 +66,7 @@ See `src/tmc/interfaces.py`.
 ## 6. Design changes made in response to feedback
 
 ## 7. Final pathway decision (CAV or signal)
-Open.
+**Tentative (team, 2026-11-15): CAV control. Subject to change.** Next: first CAV sources and scope (Lecture 07), then confirm CAV or switch to signal control.
 
 ## 8. AI-use and verification disclosure
 AI used to gather papers, format deliverables, summarize topics, and draft verification/fallback plans (per Intermediate 1). Record any further use here and how output was checked.
@@ -74,5 +78,5 @@ AI used to gather papers, format deliverables, summarize topics, and draft verif
 - 2026-11-07/08: Claude Code drafted the merge-capacity tool (E4, E6), the zipper courtesy merge (E5), the S3 baseline, and the E5b scan. Checked by: pre-registered acceptance criteria, unit tests, a dt-sensitivity run, and diagnostics of merge positions and speeds. Two of its own method flaws were found and fixed along the way (E4: nominal vs realized demand; E5b: mainline jam storage).
 - 2026-11-08: Claude Code drafted the ramp meter, `estimation.py`, `forecast.py`, `control.py`, `evaluate.py` and their tests. Checked by: hand-computable unit tests of the control law, override and forecast; queue estimate vs simulator truth; actuator headway and standing-start checks; and decision traces read line by line. The ALINEA detector placement (upstream of the merge) departs from the classic design and is justified in `tmc.control`. Each partner must be able to explain a decision-trace row (`python -m tmc.control ...`).
 - 2026-11-08: Claude Code extended the viewer (`viz.py`, `viewer_template.html`) with the ramp meter signal, detector markers, a decision-trace panel and a queue/rate timeline (`--e7`, `--control`). Checked by watching the E7 example viewers against the printed decision traces.
-- 2026-11-15: Claude Code drafted `src/tmc/report_figures.py` (progress-report figures `results/PR_*.png`, `PR_numbers.csv`, `PR_congestion_minutes.csv`). All numbers are recomputed from the package and the E6/E7 CSVs, not copied. The congestion definition (speed < v_c or occupancy > 15 %, >= 2 consecutive 30-s intervals at M_mrg) is a proposal the team still needs to confirm.
+- 2026-11-15: Claude Code drafted `src/tmc/report_figures.py` (progress-report figures `results/PR_*.png`, `PR_numbers.csv`, `PR_congestion_minutes.csv`). All numbers are recomputed from the package and the E6/E7 CSVs, not copied. Its first draft used a provisional 15 % occupancy threshold; the team replaced it with the computed critical occupancy o_c (~18 %) and adopted the definition on 2026-11-15 (section 1, E7c). Checked by: reproducing the E7 no-signal TTT exactly (27.68 veh*h) and an identical congested-minutes table under both thresholds.
 - 2026-11-07: Claude Code drafted the gap-seeking and anticipation switches and the E3 scan. Checked by: unchanged S1/S2 results with the switches off, and the multi-lane safety/conservation tests re-run with both switches on (50 tests pass).

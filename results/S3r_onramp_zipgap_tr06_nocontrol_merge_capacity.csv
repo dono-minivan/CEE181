@@ -1,0 +1,2 @@
+ramp_share,breakdown_threshold_vph,n_saturated_runs,max_free_served_vph,sat_discharge_vph,sat_discharge_cv,capacity_drop,sat_ramp_share,served_at_max_vph,ramp_served_at_max_vph,threshold_over_q_c
+0.28,900.0,31,1044.0,977.7096774193549,0.04682432456871422,0.06349647756766774,0.4366453511117648,924.5,485.0,0.5165108862999417

@@ -1,6 +1,6 @@
 """Measured merge capacity (design record section 2, option (c)).
 
-    python -m tmc.merge_capacity [scenario.yaml] [--quick | --from-csv]
+    python -m tmc.merge_capacity [scenario.yaml] [--quick | --from-csv] [--share=0.28] [--demands=800:2000:100] [--dt-check]
 
 --from-csv re-estimates from results/<scenario_id>_merge_capacity_runs.csv without re-simulating
 (the full sweep is 132 one-hour runs, ~20 min on 6 cores).
@@ -91,6 +91,21 @@ def sweep(path: Path, demands, shares, seeds, processes: int = 6) -> pd.DataFram
     return classify(df)
 
 
+def _dt_job(args):
+    path, q, r, s, dt = args
+    base = ScenarioConfig.from_yaml(path)
+    base.dt_s = dt
+    return {**steady_run(base, q, r, s), "dt_s": dt}
+
+
+def dt_check(path: Path, q_tot: float = 1500.0, share: float = 0.28, seeds=(181, 182),
+             dts=(0.05, 0.1, 0.2), processes: int = 6) -> pd.DataFrame:
+    """E6 criterion 5: served flow in one saturated case at several time steps (should stay within 3%)."""
+    jobs = [(str(path), q_tot, share, s, dt) for dt in dts for s in seeds]
+    with Pool(processes) as pool:
+        return pd.DataFrame(pool.map(_dt_job, jobs))
+
+
 def classify(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     ok = df["queued_end_veh"] < QUEUE_TOL_VEH
@@ -156,6 +171,13 @@ def main(argv: list[str]) -> None:
         raise SystemExit(f"{path} has no ramp; nothing to measure")
     out = ROOT / "results"
     runs_csv = out / f"{base.scenario_id}_merge_capacity_runs.csv"
+    if "--dt-check" in argv:                   # E6 criterion 5 on one saturated case
+        d = dt_check(path)
+        d.to_csv(out / f"{base.scenario_id}_merge_capacity_dtcheck.csv", index=False)
+        m = d.groupby("dt_s")["served_vph"].mean()
+        print(m.round(1).to_string())
+        print(f"max deviation from dt = 0.1: {100 * (m / m.loc[0.1] - 1).abs().max():.1f}%")
+        return
     if "--from-csv" in argv:
         df = classify(pd.read_csv(runs_csv))
     else:
@@ -163,6 +185,12 @@ def main(argv: list[str]) -> None:
             demands, shares, seeds = [1200, 1800], [0.28], [181]
         else:
             demands, shares, seeds = range(1000, 2001, 100), [0.1, 0.2, 0.28, 0.4], [181, 182, 183]
+        for a in argv:                         # optional overrides, e.g. --share=0.28 --demands=800:2000:100
+            if a.startswith("--share="):
+                shares = [float(x) for x in a.split("=", 1)[1].split(",")]
+            if a.startswith("--demands="):
+                lo, hi, step = (float(x) for x in a.split("=", 1)[1].split(":"))
+                demands = np.arange(lo, hi + step / 2, step)
         df = sweep(path, demands, shares, seeds)
     est = estimate(df)
     curve = ramp_capacity_curve(df)

@@ -156,3 +156,39 @@ def test_simulated_platoon_gain_matches_linear_theory(v_e, period):
     g_sim = _sinusoid_gain(v_e, period)
     assert g_sim == pytest.approx(g_theory, abs=2e-3)
     assert (g_sim > 1.0) == (string_stability_margin(v_e, P) < 0)
+
+
+# --------------------------------------------------------------------------- IIDM comparison (design record section 7)
+
+from tmc.idm import iidm_acceleration, iidm_capacity
+
+
+def test_iidm_equilibrium_gap_is_s0_plus_vT():
+    v = np.linspace(0.5, 0.99 * P.v0, 40)
+    acc = iidm_acceleration(v, P.s0 + v * P.T, np.zeros_like(v), P)
+    assert np.allclose(acc, 0.0, atol=1e-10)
+    # the IDM at the same gap brakes (its equilibrium gap is larger), so the two models differ in steady state
+    assert np.all(acceleration(v, P.s0 + v * P.T, np.zeros_like(v), P) < 0)
+
+
+def test_iidm_matches_idm_far_from_leader_and_on_free_road():
+    v = np.linspace(0.0, 0.99 * P.v0, 20)
+    free_road = np.full_like(v, np.inf)
+    assert np.allclose(iidm_acceleration(v, free_road, np.zeros_like(v), P),
+                       acceleration(v, free_road, np.zeros_like(v), P))
+    # close interaction regime (z >= 1) at standstill: both give a (1 - z^2)
+    assert iidm_acceleration(0.0, 1.0, 0.0, P) == pytest.approx(acceleration(0.0, 1.0, 0.0, P))
+    # above v0 on a free road: brakes (b-limited), never accelerates
+    assert iidm_acceleration(1.2 * P.v0, np.inf, 0.0, P) < 0
+
+
+def test_iidm_capacity_quoted_in_design_record():
+    """Design record section 7 quotes: IIDM for CAVs would raise capacity from ~1742 to ~1990 veh/h (~14%)."""
+    q_idm = capacity(P)["q_c_veh_per_h"]
+    ci = iidm_capacity(P)
+    closed_form = 3600.0 * P.v0 / (P.s0 + P.v0 * P.T + P.length)
+    assert ci["q_c_veh_per_h"] == pytest.approx(closed_form, rel=1e-6)
+    assert ci["v_c_mps"] == pytest.approx(P.v0, rel=1e-4)       # supremum at v -> v0
+    assert q_idm == pytest.approx(1742, abs=1)
+    assert ci["q_c_veh_per_h"] == pytest.approx(1990, abs=2)
+    assert ci["q_c_veh_per_h"] / q_idm - 1 == pytest.approx(0.14, abs=0.005)

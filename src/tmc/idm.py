@@ -121,6 +121,41 @@ def capacity(p: IDMParams, n: int = 200001) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- IIDM (comparison only)
+# Improved IDM, Treiber & Kesting (2013) Sec. 11.3.7, Eqs. 11.22-11.24. NOT used for any vehicle in
+# the simulator (design record section 7: all vehicle types use the IDM base). It is here to compute
+# what an IIDM base would change: its steady-state gap is exactly s0 + v T, which raises capacity.
+
+def iidm_acceleration(v, s, dv, p: IDMParams):
+    """IIDM acceleration with z = s*(v, dv) / s (same s* as the IDM); s = inf means a free road."""
+    v = np.asarray(v, dtype=float)
+    s = np.asarray(s, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        z = np.where(np.isinf(s), 0.0, desired_gap(v, dv, p) / s)
+        below = v <= p.v0
+        a_free = np.where(below, p.a * (1.0 - (v / p.v0) ** p.delta),
+                          -p.b * (1.0 - (p.v0 / np.maximum(v, 1e-12)) ** (p.a * p.delta / p.b)))
+        a_free_safe = np.where(np.abs(a_free) > 1e-12, a_free, 1e-12)
+        below_close = p.a * (1.0 - z**2)                                     # v <= v0, z >= 1
+        below_far = a_free * (1.0 - z ** (2.0 * p.a / a_free_safe))          # v <= v0, z < 1
+        above_close = a_free + p.a * (1.0 - z**2)                            # v > v0, z >= 1
+        acc = np.where(below, np.where(z >= 1.0, below_close, below_far),
+                       np.where(z >= 1.0, above_close, a_free))
+    return acc
+
+
+def iidm_capacity(p: IDMParams, n: int = 200001) -> dict:
+    """Maximum IIDM equilibrium flow q = v / (s0 + v T + l), on a speed grid over (0, v0).
+
+    The flow rises with v, so the maximum is the supremum as v -> v0: v0 / (s0 + v0 T + l).
+    Computed numerically (grid), not from the closed form; the test checks both agree.
+    """
+    v = np.linspace(1e-6, p.v0 * (1 - 1e-9), n)
+    q = v / (p.s0 + v * p.T + p.length)
+    i = int(np.argmax(q))
+    return {"q_c_veh_per_s": float(q[i]), "q_c_veh_per_h": float(q[i] * 3600.0), "v_c_mps": float(v[i])}
+
+
 # --------------------------------------------------------------------------- string stability
 
 def equilibrium_partials(v, p: IDMParams) -> dict:
@@ -197,5 +232,8 @@ if __name__ == "__main__":  # small example (CLAUDE.md rule 7)
         print(f"[{name}] q_c = {c['q_c_veh_per_h']:.0f} veh/h at v_c = {c['v_c_mps']:.1f} m/s "
               f"({c['v_c_mps'] * 2.23694:.1f} mph), k_c = {c['k_c_veh_per_m'] * 1609.344:.1f} veh/mi, "
               f"k_jam = {c['k_jam_veh_per_m'] * 1609.344:.0f} veh/mi")
+        ci = iidm_capacity(prm)
+        print(f"[{name}] IIDM comparison: q_c = {ci['q_c_veh_per_h']:.0f} veh/h "
+              f"(+{100 * (ci['q_c_veh_per_h'] / c['q_c_veh_per_h'] - 1):.1f}% vs IDM)")
         for lo, hi in string_unstable_ranges(prm):
             print(f"[{name}] string-unstable for {lo:.1f} < v_e < {hi:.1f} m/s ({hi * 2.23694:.0f} mph)")

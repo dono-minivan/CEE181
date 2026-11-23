@@ -107,6 +107,7 @@ class ScenarioConfig:
     lane_change: LaneChangeConfig = field(default_factory=LaneChangeConfig)
     detectors: list = field(default_factory=list)   # [DetectorSpec, ...] (tmc.detectors)
     control: dict | None = None                     # ramp-meter controller spec (tmc.control.make_controller)
+    reaction_time_s: float = 0.0                    # human reaction delay T_r on car-following inputs (0 = off)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ScenarioConfig":
@@ -161,6 +162,7 @@ class ScenarioConfig:
             lane_change=lane_change,
             detectors=[DetectorSpec.from_dict(x) for x in (d.get("detectors") or [])],
             control=d.get("control"),
+            reaction_time_s=float((d.get("drivers") or {}).get("reaction_time_s", 0.0)),
         )
 
 
@@ -291,7 +293,9 @@ class _Lane:
 class FreewaySegment:
     def __init__(self, params: IDMParams, cfg: ScenarioConfig,
                  arrivals: np.ndarray | None = None, ramp_arrivals: np.ndarray | None = None,
-                 controller=None):
+                 controller=None, lead_accel=None):
+        """lead_accel: optional callable (t, v) -> acceleration that scripts vehicle 0 (the most downstream
+        initial vehicle) instead of the IDM, e.g. a braking disturbance (experiment log E9, setting A)."""
         if cfg.n_lanes < 1:
             raise ValueError("n_lanes must be >= 1")
         self.p = params
@@ -357,6 +361,23 @@ class FreewaySegment:
         if controller is not None:
             from tmc.estimation import DetectorView
             self._view = DetectorView(self.det)
+        self.lead_accel = lead_accel
+        self._t = 0.0
+        self._k = 0
+        # Reaction delay (design record section 7): car-following uses the state T_r ago. History is a
+        # ring buffer of D + 1 steps per vehicle; _first[vid] = first step the vehicle was on the road.
+        self.D = 0
+        if cfg.reaction_time_s < 0:
+            raise ValueError("reaction_time_s must be >= 0")
+        if cfg.reaction_time_s > 0:
+            D = int(round(cfg.reaction_time_s / cfg.dt_s))
+            if abs(D * cfg.dt_s - cfg.reaction_time_s) > 1e-9:
+                raise ValueError(f"reaction_time_s / dt_s must be an integer "
+                                 f"({cfg.reaction_time_s} / {cfg.dt_s})")
+            self.D = D
+            self._hx = np.full((D + 1, n), np.nan)
+            self._hv = np.full((D + 1, n), np.nan)
+            self._first = np.full(n, np.iinfo(np.int64).max, dtype=np.int64)
 
     @property
     def main(self) -> _Lane:
@@ -577,7 +598,41 @@ class FreewaySegment:
         v_star = 0.5 * (m.v[lead] + m.v[fol])
         return float(np.clip(rc.gap_kx * (x_star - x) + rc.gap_kv * (v_star - v), -p.b, p.a))
 
-    def _ramp_accelerations(self, s_r, dv_r) -> np.ndarray:
+    def _store_history(self) -> None:
+        """Record every on-road vehicle's (x, v) at the current step (reaction delay only)."""
+        slot = self._k % (self.D + 1)
+        for ln in (*self.lanes, self.rlane):
+            if len(ln):
+                self._hx[slot, ln.ids] = ln.x
+                self._hv[slot, ln.ids] = ln.v
+                self._first[ln.ids] = np.minimum(self._first[ln.ids], self._k)
+
+    def _car_following(self, ln: _Lane, s, dv, delayed: bool) -> np.ndarray:
+        """IDM toward the lane leader. With a reaction delay (delayed=True, T_r > 0), all inputs are taken
+        T_r ago: a(t) = a_IDM(s(t - T_r), v(t - T_r), v_l(t - T_r)), using the CURRENT leader's stored
+        state (all lanes share one position coordinate). Current, undelayed values are used for a vehicle
+        (or pair) without T_r of history yet, i.e. just after entry, and when the delayed gap to a new
+        leader is <= 0 (it was behind the follower T_r ago). Team decision 2026-11-23."""
+        p = self.p
+        if not delayed or self.D == 0 or len(ln) == 0:
+            return acceleration(ln.v, s, dv, p)
+        k_d = self._k - self.D
+        slot = k_d % (self.D + 1)
+        ids = ln.ids
+        ok = self._first[ids] <= k_d
+        xd, vd = self._hx[slot, ids], self._hv[slot, ids]
+        v_in = np.where(ok, vd, ln.v)
+        s_in, dv_in = s.copy(), dv.copy()
+        if len(ln) > 1:
+            s_d = xd[:-1] - xd[1:] - p.length
+            pair = ok[1:] & ok[:-1]
+            pair &= np.where(pair, s_d, -1.0) > 0
+            s_in[1:] = np.where(pair, s_d, s[1:])
+            dv_in[1:] = np.where(pair, vd[1:] - vd[:-1], dv[1:])
+            v_in[1:] = np.where(pair, vd[1:], ln.v[1:])
+        return acceleration(v_in, s_in, dv_in, p)
+
+    def _ramp_accelerations(self, s_r, dv_r, delayed: bool = False) -> np.ndarray:
         """Ramp-lane accelerations = min of three demands:
         (1) IDM toward the ramp leader;
         (2) lane end (most downstream ramp vehicle only): no reaction until the kinematic stopping
@@ -589,7 +644,7 @@ class FreewaySegment:
             capped at b, so ramp vehicles arrive at the merge at mainline speed.
         """
         p, r, m, rc = self.p, self.rlane, self.main, self.ramp
-        acc = acceleration(r.v, s_r, dv_r, p)
+        acc = self._car_following(r, s_r, dv_r, delayed)
         if len(r) == 0:
             return acc
         # (2) lane end
@@ -655,21 +710,29 @@ class FreewaySegment:
             if a_y >= -b_c:
                 acc_m[j] = min(acc_m[j], a_y)
 
-    def _accelerations(self):
+    def _accelerations(self, delayed: bool = False):
         """Accelerations of every mainline lane and the ramp lane from the current state.
+        delayed=True applies the reaction delay to car-following (the applied accelerations, step 3).
+        Lane-change decisions call it with delayed=False: merge, courtesy, yield, lane-end and MOBIL
+        decisions stay undelayed (team decision 2026-11-23, a stated limitation).
         Returns (list of per-lane arrays, ramp array, list of per-lane gaps, ramp gaps)."""
         p = self.p
         accs, gaps = [], []
         for ln in self.lanes:
             s, dv = ln.gaps_and_dv(p.length)
-            accs.append(acceleration(ln.v, s, dv, p))
+            accs.append(self._car_following(ln, s, dv, delayed))
             gaps.append(s)
         s_r, dv_r = self.rlane.gaps_and_dv(p.length)
-        acc_r = self._ramp_accelerations(s_r, dv_r) if self.ramp else np.empty(0)
+        acc_r = self._ramp_accelerations(s_r, dv_r, delayed) if self.ramp else np.empty(0)
         if self.ramp and self.ramp.cooperative_yield:
             self._yield(accs[MAIN])
         if self.ramp and self.ramp.courtesy == "zipper":
             self._courtesy(accs[MAIN])
+        if self.lead_accel is not None:
+            for ln, acc in zip(self.lanes, accs):
+                hit = np.flatnonzero(ln.ids == 0)
+                if hit.size:
+                    acc[hit[0]] = float(self.lead_accel(self._t, float(ln.v[hit[0]])))
         return accs, acc_r, gaps, s_r
 
     # -- main loop
@@ -684,6 +747,7 @@ class FreewaySegment:
         k = 0
         while True:
             t = k * dt
+            self._t, self._k = t, k
             # 1) arrivals up to and including t join their queues
             for b in (MAIN, RAMP):
                 pend = self._pending[b]
@@ -710,7 +774,9 @@ class FreewaySegment:
                 states[RAMP] = self.rlane.x
                 self.det.sample(states)
             # 3) accelerations + safety audit
-            accs, acc_r, gaps, s_r = self._accelerations()
+            if self.D:
+                self._store_history()
+            accs, acc_r, gaps, s_r = self._accelerations(delayed=True)
             finite = np.concatenate([g[np.isfinite(g)] for g in gaps] + [s_r[1:]])
             if len(finite):
                 g = float(finite.min())

@@ -186,26 +186,43 @@ def string_stability_margin(v, p: IDMParams):
     return 0.5 * d["f_v"] ** 2 + d["f_v"] * d["f_dv"] - d["f_s"]
 
 
-def platoon_gain(v, omega, p: IDMParams):
+def platoon_gain(v, omega, p: IDMParams, reaction_time_s: float = 0.0):
     """Linear per-vehicle speed gain |G(i omega)| = |V_follower / V_leader| at equilibrium speed v.
 
-    Linearizing ds/dt = v_l - v, dv/dt = f_s ds + f_v dv + f_dv (dv - dv_l) gives
-    G(i w) = (f_s - i w f_dv) / (-w^2 - i w (f_v + f_dv) + f_s).
-    |G| > 1 at some omega  <=>  string_stability_margin(v) < 0. A wave of angular frequency omega
-    grows by a factor |G| per vehicle (so ln|G| is the per-vehicle growth rate of that wave).
+    Linearizing ds/dt = v_l - v, dv/dt(t) = [f_s ds + f_v dv + f_dv (dv - dv_l)](t - T_r) gives, with
+    E = exp(-i w T_r) (reaction delay on all inputs, design record section 7):
+        G(i w) = E (f_s - i w f_dv) / (-w^2 - i w E (f_v + f_dv) + E f_s).
+    T_r = 0 gives the undelayed IDM; then |G| > 1 at some omega  <=>  string_stability_margin(v) < 0.
+    A wave of angular frequency omega grows by a factor |G| per vehicle (ln|G| = per-vehicle growth rate).
     """
     d = equilibrium_partials(v, p)
     iw = 1j * np.asarray(omega, dtype=float)
-    G = (d["f_s"] - iw * d["f_dv"]) / (iw**2 - iw * (d["f_v"] + d["f_dv"]) + d["f_s"])
+    E = np.exp(-iw * reaction_time_s)
+    G = E * (d["f_s"] - iw * d["f_dv"]) / (iw**2 - iw * E * (d["f_v"] + d["f_dv"]) + E * d["f_s"])
     return np.abs(G)
 
 
-def max_platoon_gain(v: float, p: IDMParams, omega_max: float = 3.0, n: int = 30001) -> dict:
+def max_platoon_gain(v: float, p: IDMParams, omega_max: float = 3.0, n: int = 30001,
+                     reaction_time_s: float = 0.0) -> dict:
     """Largest per-vehicle gain over omega in (0, omega_max] rad/s, and the wave period where it occurs."""
     w = np.linspace(omega_max / n, omega_max, n)
-    g = platoon_gain(v, w, p)
+    g = platoon_gain(v, w, p, reaction_time_s)
     i = int(np.argmax(g))
     return {"gain": float(g[i]), "growth_per_veh": float(np.log(g[i])), "period_s": float(2 * np.pi / w[i])}
+
+
+def unstable_speeds_by_gain(p: IDMParams, reaction_time_s: float = 0.0, n: int = 400) -> np.ndarray:
+    """Equilibrium speeds (grid of n over (0, v0)) where some wave grows: |G(omega)| > 1 for some omega.
+
+    Works with a reaction delay, where the T&K Eq. 15.77 margin does not apply. Near the stability
+    boundary only long waves grow and |G| - 1 ~ omega^2, so omega is log-spaced down to 1e-4 rad/s and
+    the tolerance is tight. Note: with the delay on ALL inputs, exp(-i w T_r) cancels from the O(omega^2)
+    terms of |G|^2, so the delay does not move the long-wave boundary; it raises growth of finite waves.
+    With T_r = 0 this must agree with string_unstable_ranges (tested).
+    """
+    v = np.linspace(p.v0 * 0.01, p.v0 * 0.99, n)
+    w = np.geomspace(1e-4, 3.0, 4000)
+    return np.array([vi for vi in v if (platoon_gain(vi, w, p, reaction_time_s) - 1.0).max() > 1e-12])
 
 
 def string_unstable_ranges(p: IDMParams, n: int = 20001) -> list[tuple[float, float]]:
@@ -237,3 +254,7 @@ if __name__ == "__main__":  # small example (CLAUDE.md rule 7)
               f"(+{100 * (ci['q_c_veh_per_h'] / c['q_c_veh_per_h'] - 1):.1f}% vs IDM)")
         for lo, hi in string_unstable_ranges(prm):
             print(f"[{name}] string-unstable for {lo:.1f} < v_e < {hi:.1f} m/s ({hi * 2.23694:.0f} mph)")
+        u = unstable_speeds_by_gain(prm, reaction_time_s=0.6)
+        g15 = max_platoon_gain(15.0, prm, reaction_time_s=0.6)
+        print(f"[{name}] with T_r = 0.6 s: unstable up to {u.max():.1f} m/s; at 15 m/s max growth "
+              f"{g15['growth_per_veh']:.4f}/veh (period {g15['period_s']:.0f} s)")

@@ -46,6 +46,7 @@ Ramp control (S3 baseline: zipper + gap-seeking merge, detector-only controllers
 CAV pathway, E9 setting A (braking wave in a 30-vehicle platoon, `configs/scenario_e9_setting_a.yaml`):
 
     python -m tmc.disturbance --quick    # one run, prints the metrics
+    python -m tmc.cav                    # CAV controller core: one ACC and one CACC follower behind a braking leader
     python -m tmc.disturbance            # human baseline (T_r = 0 and 0.6 s), writes results/E9A_human_baseline*
 
 ## Tests

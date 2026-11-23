@@ -1,0 +1,23 @@
+# E9 setting A: braking disturbance in a single-lane platoon (experiment log E9, design record section 7).
+# Used by src/tmc/disturbance.py. No arrivals or exits; equipped-vehicle placement seeds apply only once
+# CAVs exist (human runs are deterministic, so seeds do not change them).
+scenario_id: E9A_platoon
+param_set: baseline
+v_eq_mps: 15.0            # inside the IDM string-unstable range (< 22.9 m/s, tmc.idm)
+n_followers: 30
+dt_s: 0.1
+duration_s: 400.0         # long enough for the wave to pass vehicle 30 and the platoon to recover
+g_threshold_per_veh: 0.0035   # = ln(1/0.9)/30, the E9 "disturbance reduced" margin
+seeds: [181, 182, 183, 184]
+seeds_holdout: [185, 186, 187, 188]
+disturbances:
+  nominal:                # lead brakes at 2 m/s^2 to 10 m/s, holds 10 s, recovers at a
+    v_low: 10.0
+    b_lead: 2.0
+    hold_s: 10.0
+    t_start: 10.0         # after T_r of history exists for every vehicle
+  strong:                 # same, to 5 m/s
+    v_low: 5.0
+    b_lead: 2.0
+    hold_s: 10.0
+    t_start: 10.0

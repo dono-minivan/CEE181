@@ -43,6 +43,7 @@ import pandas as pd
 import yaml
 
 from tmc.detectors import DetectorBank, DetectorSpec
+from tmc.cav import TICK_S, CAVController, V2VChannel, acc_command
 from tmc.idm import IDMParams, acceleration, ballistic_update, load_params
 
 MAIN, RAMP = 0, -1   # MAIN = rightmost mainline lane; further mainline lanes are 1, 2, ...
@@ -108,6 +109,7 @@ class ScenarioConfig:
     detectors: list = field(default_factory=list)   # [DetectorSpec, ...] (tmc.detectors)
     control: dict | None = None                     # ramp-meter controller spec (tmc.control.make_controller)
     reaction_time_s: float = 0.0                    # human reaction delay T_r on car-following inputs (0 = off)
+    cav: dict | None = None                         # equipped vehicles (tmc.cav), keys in FreewaySegment._init_cav
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ScenarioConfig":
@@ -163,6 +165,7 @@ class ScenarioConfig:
             detectors=[DetectorSpec.from_dict(x) for x in (d.get("detectors") or [])],
             control=d.get("control"),
             reaction_time_s=float((d.get("drivers") or {}).get("reaction_time_s", 0.0)),
+            cav=d.get("cav"),
         )
 
 
@@ -206,6 +209,7 @@ class SimResult:
     # lane_changes: one row per lane change, kind = "discretionary" (mainline MOBIL) or "merge" (ramp -> lane 0)
     observations: pd.DataFrame = field(default_factory=pd.DataFrame)
     control_trace: pd.DataFrame = field(default_factory=pd.DataFrame)   # one row per controller update
+    cav_events: pd.DataFrame = field(default_factory=pd.DataFrame)      # CACC fallbacks: time_s, vehicle_id, reason
     # observations: one row per detector interval (interfaces.Observation fields), empty if no detectors
 
     def summary(self) -> dict:
@@ -362,8 +366,10 @@ class FreewaySegment:
             from tmc.estimation import DetectorView
             self._view = DetectorView(self.det)
         self.lead_accel = lead_accel
+        self._lead_a: float | None = None
         self._t = 0.0
         self._k = 0
+        self._init_cav(cfg.cav, n)
         # Reaction delay (design record section 7): car-following uses the state T_r ago. History is a
         # ring buffer of D + 1 steps per vehicle; _first[vid] = first step the vehicle was on the road.
         self.D = 0
@@ -437,19 +443,20 @@ class FreewaySegment:
             self.entry_s[vid] = t
             self.entry_lane[vid] = k
 
-    def _safe_slot(self, lane: _Lane, x: float, v: float, b_safe: float):
-        """MOBIL safety criterion for a vehicle (x, v) moving into `lane`: gaps to the new leader and
+    def _safe_slot(self, lane: _Lane, x: float, v: float, b_safe: float, vid: int):
+        """MOBIL safety criterion for vehicle `vid` at (x, v) moving into `lane`: gaps to the new leader and
         follower > 0, and neither the mover nor its new follower must brake harder than b_safe.
-        Returns the insertion index if safe, else None."""
+        Accelerations from _decision_acc (equipped: own ACC law). Returns the insertion index if safe."""
         p = self.p
         j = lane.slot(x)
         if j > 0:
             s_lead = lane.x[j - 1] - x - p.length
-            if not (s_lead > 0 and acceleration(v, s_lead, v - lane.v[j - 1], p) >= -b_safe):
+            if not (s_lead > 0 and self._decision_acc(vid, v, s_lead, v - lane.v[j - 1]) >= -b_safe):
                 return None
         if j < len(lane):
             s_fol = x - lane.x[j] - p.length
-            if not (s_fol > 0 and acceleration(lane.v[j], s_fol, lane.v[j] - v, p) >= -b_safe):
+            if not (s_fol > 0 and self._decision_acc(int(lane.ids[j]), lane.v[j], s_fol, lane.v[j] - v)
+                    >= -b_safe):
                 return None
         return j
 
@@ -461,7 +468,7 @@ class FreewaySegment:
             xr, vr = float(r.x[i]), float(r.v[i])
             if xr < self.ramp.merge_start_m:
                 break  # lane is ordered downstream-first; nobody further back is in the merge zone
-            j = self._safe_slot(m, xr, vr, self.ramp.b_safe_mps2)
+            j = self._safe_slot(m, xr, vr, self.ramp.b_safe_mps2, int(r.ids[i]))
             if j is not None:
                 vid = int(r.ids[i])
                 m.insert(j, vid, xr, vr)
@@ -543,7 +550,7 @@ class FreewaySegment:
             A, B = self.lanes[ia], self.lanes[ib]
             i = int(np.flatnonzero(A.ids == vid)[0])
             x, v = float(A.x[i]), float(A.v[i])
-            j = self._safe_slot(B, x, v, bs)
+            j = self._safe_slot(B, x, v, bs, int(vid))
             if j is None:
                 continue
             A.remove_at(i)
@@ -598,6 +605,84 @@ class FreewaySegment:
         v_star = 0.5 * (m.v[lead] + m.v[fol])
         return float(np.clip(rc.gap_kx * (x_star - x) + rc.gap_kv * (v_star - v), -p.b, p.a))
 
+    # -- equipped vehicles (design record section 7, tmc.cav)
+    def _init_cav(self, c: dict | None, n: int) -> None:
+        """cav config keys: p_equipped (0-1), mode ('acc' | 'cacc'), placement_seed, tau_s (0.1),
+        delay_s (0.15), loss_prob (0), loss_seed, outages ([[start_s, end_s], ...]), comms (True),
+        max_age_ticks (5; null = no age limit, the E9 mechanism check with fallback disabled).
+        Equipped vehicles are drawn once per vehicle ID with their own RNG, so arrivals are unchanged."""
+        self.equipped = np.zeros(n, dtype=bool)
+        self.ctl: dict[int, CAVController] = {}
+        self.channel: V2VChannel | None = None
+        self._a_real: dict[int, float] = {}
+        self._cav_on = False
+        if not c or float(c.get("p_equipped", 0.0)) <= 0.0:
+            return
+        p_eq = float(c["p_equipped"])
+        self.equipped = np.random.default_rng(c.get("placement_seed")).random(n) < p_eq
+        self.cav_mode = str(c.get("mode", "acc"))
+        if self.cav_mode not in ("acc", "cacc"):
+            raise ValueError(f"cav.mode must be 'acc' or 'cacc', got {self.cav_mode!r}")
+        self.cav_tau = float(c.get("tau_s", 0.1))
+        self.cav_max_age = c.get("max_age_ticks", 5)
+        spt = int(round(TICK_S / self.cfg.dt_s))
+        if spt < 1 or abs(spt * self.cfg.dt_s - TICK_S) > 1e-9:
+            raise ValueError(f"with CAVs, dt_s must divide {TICK_S} s exactly (got {self.cfg.dt_s})")
+        self._spt = spt
+        if self.cav_mode == "cacc" and bool(c.get("comms", True)):
+            self.channel = V2VChannel(delay_s=float(c.get("delay_s", 0.15)),
+                                      loss_prob=float(c.get("loss_prob", 0.0)),
+                                      outages=[tuple(o) for o in c.get("outages", [])],
+                                      seed=c.get("loss_seed"))
+        self._cav_on = bool(self.equipped.any())
+
+    def _cav_commands(self, tick: int) -> None:
+        """One controller update per tick, LEADER-FIRST along each lane (index 0 = most downstream); each
+        equipped vehicle broadcasts its command right after computing it, so a 0-tick delay means the
+        same-tick command. Inputs are the permitted sensed quantities only: own speed, gap and approach rate
+        to the lane leader, the leader's identity, received messages. The leader's equipped flag is passed
+        only to label a fallback reason. A scripted lead (vehicle 0) broadcasts its scripted acceleration."""
+        p = self.p
+        for ln in (*self.lanes, self.rlane):
+            if len(ln) == 0:
+                continue
+            s, dv = ln.gaps_and_dv(p.length)
+            for i in range(len(ln)):
+                vid = int(ln.ids[i])
+                if not self.equipped[vid]:
+                    continue
+                if vid == 0 and self.lead_accel is not None:
+                    if self.channel is not None and self._lead_a is not None:
+                        self.channel.send(vid, tick, float(self._lead_a))
+                    continue
+                ctl = self.ctl.get(vid)
+                if ctl is None:
+                    ctl = self.ctl[vid] = CAVController(vid, self.cav_mode, p, tau_s=self.cav_tau,
+                                                        max_age_ticks=self.cav_max_age)
+                leader = int(ln.ids[i - 1]) if i > 0 else None
+                out = ctl.command(tick, float(ln.v[i]), float(s[i]), float(dv[i]), leader, self.channel,
+                                  bool(self.equipped[leader]) if leader is not None else False)
+                if self.channel is not None:
+                    self.channel.send(vid, tick, out["u"])
+
+    def _cav_actuate(self, dt: float) -> None:
+        """Advance every on-road controller's actuator lag by one step (realized accelerations)."""
+        self._a_real = {}
+        for ln in (*self.lanes, self.rlane):
+            for vid in ln.ids:
+                ctl = self.ctl.get(int(vid))
+                if ctl is not None:
+                    self._a_real[int(vid)] = ctl.actuate(dt)
+
+    def _decision_acc(self, vid: int, v, s, dv) -> float:
+        """Acceleration a vehicle would have behind a NEW leader, for merge safety, courtesy and yielding.
+        Equipped: its ACC command with a_l missing (the new target has no track yet), which by the
+        confirmed missing-a_l rule is the IDM clipped to [A_MIN, a]. Human: undelayed IDM (decisions are
+        never delayed). The checks compare against -b_safe > A_MIN, so the two coincide numerically."""
+        if self.equipped[vid]:
+            return acc_command(float(s), float(v), float(dv), None, self.p)
+        return float(acceleration(v, s, dv, self.p))
+
     def _store_history(self) -> None:
         """Record every on-road vehicle's (x, v) at the current step (reaction delay only)."""
         slot = self._k % (self.D + 1)
@@ -612,10 +697,22 @@ class FreewaySegment:
         T_r ago: a(t) = a_IDM(s(t - T_r), v(t - T_r), v_l(t - T_r)), using the CURRENT leader's stored
         state (all lanes share one position coordinate). Current, undelayed values are used for a vehicle
         (or pair) without T_r of history yet, i.e. just after entry, and when the delayed gap to a new
-        leader is <= 0 (it was behind the follower T_r ago). Team decision 2026-11-23."""
+        leader is <= 0 (it was behind the follower T_r ago). Team decision 2026-11-23.
+        delayed=True also marks the APPLIED accelerations: there, equipped vehicles get their controller's
+        realized acceleration instead (no reaction delay). Other demands (lane end, gap seeking, courtesy,
+        yielding) are still applied on top as a min, for humans and equipped vehicles alike."""
+        acc = self._human_car_following(ln, s, dv, delayed)
+        if delayed and self._cav_on and len(ln):
+            for i, vid in enumerate(ln.ids):
+                a_r = self._a_real.get(int(vid))
+                if a_r is not None:
+                    acc[i] = a_r                        # equipped: controller output after the actuator lag
+        return acc
+
+    def _human_car_following(self, ln: _Lane, s, dv, delayed: bool) -> np.ndarray:
         p = self.p
         if not delayed or self.D == 0 or len(ln) == 0:
-            return acceleration(ln.v, s, dv, p)
+            return np.asarray(acceleration(ln.v, s, dv, p), dtype=float)
         k_d = self._k - self.D
         slot = k_d % (self.D + 1)
         ids = ln.ids
@@ -687,7 +784,7 @@ class FreewaySegment:
             s = r.x[i] - m.x[j] - p.length
             if s <= 0 or r.v[i] < rc.yield_min_speed_ratio * m.v[j]:
                 continue
-            a_y = float(acceleration(m.v[j], s, m.v[j] - r.v[i], p))
+            a_y = self._decision_acc(int(m.ids[j]), m.v[j], s, m.v[j] - r.v[i])
             if a_y >= -p.b:
                 acc_m[j] = min(acc_m[j], a_y)
 
@@ -706,7 +803,7 @@ class FreewaySegment:
             s = r.x[i] - m.x[j] - p.length
             if s <= 0:
                 continue
-            a_y = float(acceleration(m.v[j], s, m.v[j] - r.v[i], p))
+            a_y = self._decision_acc(int(m.ids[j]), m.v[j], s, m.v[j] - r.v[i])
             if a_y >= -b_c:
                 acc_m[j] = min(acc_m[j], a_y)
 
@@ -731,8 +828,8 @@ class FreewaySegment:
         if self.lead_accel is not None:
             for ln, acc in zip(self.lanes, accs):
                 hit = np.flatnonzero(ln.ids == 0)
-                if hit.size:
-                    acc[hit[0]] = float(self.lead_accel(self._t, float(ln.v[hit[0]])))
+                if hit.size and self._lead_a is not None:
+                    acc[hit[0]] = float(self._lead_a)
         return accs, acc_r, gaps, s_r
 
     # -- main loop
@@ -776,6 +873,16 @@ class FreewaySegment:
             # 3) accelerations + safety audit
             if self.D:
                 self._store_history()
+            self._lead_a = None
+            if self.lead_accel is not None:          # scripted lead: evaluated once per step
+                for ln in self.lanes:
+                    h = np.flatnonzero(ln.ids == 0)
+                    if h.size:
+                        self._lead_a = float(self.lead_accel(t, float(ln.v[h[0]])))
+            if self._cav_on:
+                if k % self._spt == 0:
+                    self._cav_commands(k // self._spt)
+                self._cav_actuate(dt)
             accs, acc_r, gaps, s_r = self._accelerations(delayed=True)
             finite = np.concatenate([g[np.isfinite(g)] for g in gaps] + [s_r[1:]])
             if len(finite):
@@ -832,6 +939,7 @@ class FreewaySegment:
             "vehicle_id": np.arange(len(self.arrival_s)), "origin": self.origin,
             "arrival_s": self.arrival_s, "entry_s": self.entry_s, "entry_lane": self.entry_lane,
             "merge_s": self.merge_s, "exit_s": self.exit_s, "n_lane_changes": n_changes,
+            "equipped": self.equipped,
         })
         counts = pd.DataFrame(count_rows, columns=["time_s", "n_arrived", "n_queued", "n_queued_main",
                                                    "n_queued_ramp", "n_on_road", "n_on_main", "n_on_ramp",
@@ -844,7 +952,11 @@ class FreewaySegment:
             self.det.finish(end_t)
             obs = self.det.to_frame()
         trace = self.controller.trace_frame() if self.controller is not None else pd.DataFrame()
-        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc, obs, trace)
+        ev = [(tick * TICK_S, vid, reason) for vid, c in self.ctl.items() for tick, reason in c.log]
+        cav_events = pd.DataFrame(ev, columns=["time_s", "vehicle_id", "reason"]).sort_values(
+            ["time_s", "vehicle_id"], ignore_index=True)
+        return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc, obs, trace,
+                         cav_events)
 
 
 SingleLaneSegment = FreewaySegment  # backward-compatible name: a segment with no ramp configured

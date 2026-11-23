@@ -76,7 +76,8 @@ def load_setting(path: Path = CONFIG) -> dict:
     return d
 
 
-def platoon_config(s: dict, p: IDMParams, reaction_time_s: float, dt: float | None = None) -> ScenarioConfig:
+def platoon_config(s: dict, p: IDMParams, reaction_time_s: float, dt: float | None = None,
+                   cav: dict | None = None) -> ScenarioConfig:
     v_eq, n = float(s["v_eq_mps"]), int(s["n_followers"])
     spacing = float(equilibrium_gap(v_eq, p)) + p.length
     x0 = (n + 1) * spacing + 10.0
@@ -86,13 +87,15 @@ def platoon_config(s: dict, p: IDMParams, reaction_time_s: float, dt: float | No
         length_m=1e7, dt_s=dt, record_every_s=dt, max_time_s=float(s["duration_s"]),
         arrival_process="uniform", demand_profile=[],
         initial_vehicles=[[x0 - i * spacing, v_eq] for i in range(n + 1)],
-        reaction_time_s=reaction_time_s)
+        reaction_time_s=reaction_time_s, cav=cav)
 
 
 def run_platoon(s: dict, dist: Disturbance, reaction_time_s: float, dt: float | None = None,
-                p: IDMParams | None = None):
+                p: IDMParams | None = None, cav: dict | None = None):
+    """One setting A run. reaction_time_s applies to human vehicles; cav (network cav config) adds
+    equipped vehicles, which have no reaction delay."""
     p = p or load_params(s["param_set"])
-    cfg = platoon_config(s, p, reaction_time_s, dt)
+    cfg = platoon_config(s, p, reaction_time_s, dt, cav)
     lead = ScriptedLead(dist, float(s["v_eq_mps"]), p.a, cfg.dt_s)
     res = FreewaySegment(p, cfg, lead_accel=lead).run()
     return res, p

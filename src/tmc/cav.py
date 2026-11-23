@@ -168,6 +168,7 @@ class CAVController:
     mode: str
     p: IDMParams
     tau_s: float = 0.1
+    max_age_ticks: int | None = MAX_AGE_TICKS   # None: no age limit (E9 mechanism check, fallback disabled)
     estimator: LeaderAccelEstimator = field(default_factory=LeaderAccelEstimator)
     u: float = 0.0                  # current command (held over the tick)
     a_realized: float = 0.0
@@ -188,7 +189,7 @@ class CAVController:
         a_l, source, reason = a_sensor, ("sensor" if a_sensor is not None else "none"), ""
         if self.mode == "cacc" and leader is not None:
             msg = channel.latest(leader, tick, self.leader_since_tick) if channel is not None else None
-            if msg is not None and tick - msg[1] <= MAX_AGE_TICKS:
+            if msg is not None and (self.max_age_ticks is None or tick - msg[1] <= self.max_age_ticks):
                 a_l, source = msg[0], "v2v"
             else:
                 reason = ("comms_off" if channel is None else

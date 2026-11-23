@@ -76,3 +76,83 @@ def test_capacity_is_recomputed_and_consistent():
     assert equilibrium_flow(c["v_c_mps"], P) == pytest.approx(c["q_c_veh_per_s"])
     # shorter T / larger a should raise capacity (sensitivity direction check)
     assert capacity(load_params("sensitivity"))["q_c_veh_per_s"] > c["q_c_veh_per_s"]
+
+
+# --------------------------------------------------------------------------- string stability
+
+from dataclasses import replace
+
+from tmc.idm import (equilibrium_partials, max_platoon_gain, platoon_gain, string_stability_margin,
+                     string_unstable_ranges)
+
+
+@pytest.mark.parametrize("v_e", [5.0, 15.0, 22.0, 28.0])
+def test_analytic_partials_match_finite_differences(v_e):
+    d = equilibrium_partials(v_e, P)
+    s, h = float(d["s_e"]), 1e-5
+    f_s = (acceleration(v_e, s + h, 0.0, P) - acceleration(v_e, s - h, 0.0, P)) / (2 * h)
+    f_v = (acceleration(v_e + h, s, 0.0, P) - acceleration(v_e - h, s, 0.0, P)) / (2 * h)
+    f_dv = (acceleration(v_e, s, h, P) - acceleration(v_e, s, -h, P)) / (2 * h)
+    assert float(d["f_s"]) == pytest.approx(float(f_s), rel=1e-5)
+    assert float(d["f_v"]) == pytest.approx(float(f_v), rel=1e-5)
+    assert float(d["f_dv"]) == pytest.approx(float(f_dv), rel=1e-5)
+
+
+def test_unstable_ranges_reproduce_values_quoted_in_E9():
+    """Experiment log E9 quotes: baseline unstable below ~22.9 m/s; T = 0.6 s below ~24.5 m/s."""
+    (lo, hi), = string_unstable_ranges(P)
+    assert lo < 0.1 and hi == pytest.approx(22.9, abs=0.05)
+    (lo6, hi6), = string_unstable_ranges(replace(P, T=0.6))
+    assert hi6 == pytest.approx(24.5, abs=0.05)
+    assert hi6 > hi  # shorter time gap alone destabilizes (the E9 argument)
+    # E9 setting A runs at 15 m/s, which must sit inside the unstable range
+    assert string_stability_margin(15.0, P) < 0
+
+
+def test_stronger_acceleration_stabilizes():
+    """Direction check: a more responsive driver (larger a) narrows the unstable range."""
+    hi = string_unstable_ranges(P)[0][1]
+    hi_fast = string_unstable_ranges(replace(P, a=1.5))
+    assert not hi_fast or hi_fast[0][1] < hi
+
+
+@pytest.mark.parametrize("v_e", [5.0, 10.0, 15.0, 20.0, 22.5, 23.5, 26.0, 30.0])
+def test_transfer_function_agrees_with_margin(v_e):
+    """Two analytic routes agree: peak gain > 1 exactly where the T&K 15.77 margin is negative."""
+    unstable = string_stability_margin(v_e, P) < 0
+    assert (max_platoon_gain(v_e, P)["gain"] > 1.0) == unstable
+
+
+def _sinusoid_gain(v_e, period, n=20, dt=0.1, t_end=1200.0, amp=0.05):
+    """Simulate an open platoon behind a leader oscillating at `period`; return the measured gain per vehicle."""
+    w = 2 * np.pi / period
+    s_e = float(equilibrium_gap(v_e, P))
+    x = -np.arange(n + 1) * (s_e + P.length)          # index 0 = leader
+    v = np.full(n + 1, v_e)
+    steps = int(t_end / dt)
+    hist = np.empty((steps, n + 1))
+    for k in range(steps):
+        t = k * dt
+        ramp = min(1.0, t / 120.0)                    # fade the forcing in to limit transients
+        a_lead = amp * w * (ramp * np.cos(w * t) + (1 / (120.0 * w) if t < 120 else 0.0) * np.sin(w * t))
+        gap = x[:-1] - x[1:] - P.length
+        acc = np.concatenate([[a_lead], acceleration(v[1:], gap, v[1:] - v[:-1], P)])
+        x, v = ballistic_update(x, v, acc, dt)
+        assert np.all(x[:-1] - x[1:] - P.length > 0)
+        hist[k] = v
+    tail = hist[int(0.6 * steps):]                    # periodic steady state
+    amp_v = 0.5 * (tail.max(axis=0) - tail.min(axis=0))
+    return (amp_v[-1] / amp_v[0]) ** (1.0 / n)
+
+
+@pytest.mark.parametrize("v_e, period", [(15.0, None), (28.0, 60.0)])
+def test_simulated_platoon_gain_matches_linear_theory(v_e, period):
+    """The simulator reproduces the analytic per-vehicle gain. At 15 m/s (unstable range) the most
+    amplified wave grows; at 28 m/s (stable) a 60 s wave decays. (In the stable range the peak sits at
+    omega -> 0 with |G| -> 1, so a fixed finite period is used there.)"""
+    if period is None:
+        period = max_platoon_gain(v_e, P)["period_s"]
+    g_theory = float(platoon_gain(v_e, 2 * np.pi / period, P))
+    g_sim = _sinusoid_gain(v_e, period)
+    assert g_sim == pytest.approx(g_theory, abs=2e-3)
+    assert (g_sim > 1.0) == (string_stability_margin(v_e, P) < 0)

@@ -121,6 +121,75 @@ def capacity(p: IDMParams, n: int = 200001) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- string stability
+
+def equilibrium_partials(v, p: IDMParams) -> dict:
+    """Analytic partial derivatives of the IDM acceleration f(s, v, dv) at equilibrium (s = s_e(v), dv = 0).
+
+    Code convention: dv = v - v_leader (approach rate), so f_dv < 0 (approaching -> brake).
+    f_v is taken with dv held fixed. Valid for 0 < v < v0.
+    """
+    v = np.asarray(v, dtype=float)
+    s = equilibrium_gap(v, p)
+    s_star = p.s0 + v * p.T                                   # s*(v, 0)
+    f_s = 2.0 * p.a * s_star**2 / s**3
+    f_v = -p.a * (p.delta * v ** (p.delta - 1.0) / p.v0**p.delta + 2.0 * s_star * p.T / s**2)
+    f_dv = -p.a * s_star * v / (s**2 * np.sqrt(p.a * p.b))
+    return {"s_e": s, "f_s": f_s, "f_v": f_v, "f_dv": f_dv}
+
+
+def string_stability_margin(v, p: IDMParams):
+    """Linear string-stability margin of an IDM platoon at equilibrium speed v (m/s).
+
+    Criterion: Treiber & Kesting (2013) Eq. 15.77 (Wilson's condition for f(s, v, v_l) models).
+    String-stable iff  f_v^2 / 2 + f_v f_dv - f_s >= 0.
+    The f_v f_dv term is written for this module's dv = v - v_leader; it is positive (both partials < 0),
+    i.e. responding to the approach rate damps waves. With the book's leader-speed form it is
+    -f_v f_{v_l}, the same quantity. Margin < 0 means small disturbances grow along the platoon.
+    """
+    d = equilibrium_partials(v, p)
+    return 0.5 * d["f_v"] ** 2 + d["f_v"] * d["f_dv"] - d["f_s"]
+
+
+def platoon_gain(v, omega, p: IDMParams):
+    """Linear per-vehicle speed gain |G(i omega)| = |V_follower / V_leader| at equilibrium speed v.
+
+    Linearizing ds/dt = v_l - v, dv/dt = f_s ds + f_v dv + f_dv (dv - dv_l) gives
+    G(i w) = (f_s - i w f_dv) / (-w^2 - i w (f_v + f_dv) + f_s).
+    |G| > 1 at some omega  <=>  string_stability_margin(v) < 0. A wave of angular frequency omega
+    grows by a factor |G| per vehicle (so ln|G| is the per-vehicle growth rate of that wave).
+    """
+    d = equilibrium_partials(v, p)
+    iw = 1j * np.asarray(omega, dtype=float)
+    G = (d["f_s"] - iw * d["f_dv"]) / (iw**2 - iw * (d["f_v"] + d["f_dv"]) + d["f_s"])
+    return np.abs(G)
+
+
+def max_platoon_gain(v: float, p: IDMParams, omega_max: float = 3.0, n: int = 30001) -> dict:
+    """Largest per-vehicle gain over omega in (0, omega_max] rad/s, and the wave period where it occurs."""
+    w = np.linspace(omega_max / n, omega_max, n)
+    g = platoon_gain(v, w, p)
+    i = int(np.argmax(g))
+    return {"gain": float(g[i]), "growth_per_veh": float(np.log(g[i])), "period_s": float(2 * np.pi / w[i])}
+
+
+def string_unstable_ranges(p: IDMParams, n: int = 20001) -> list[tuple[float, float]]:
+    """Equilibrium-speed intervals (m/s) where the IDM platoon is string-unstable, on a grid over (0, v0)."""
+    v = np.linspace(p.v0 * 1e-4, p.v0 * (1 - 1e-6), n)
+    unstable = string_stability_margin(v, p) < 0
+    ranges, start = [], None
+    for vi, u in zip(v, unstable):
+        if u and start is None:
+            start = vi
+        if not u and start is not None:
+            ranges.append((float(start), float(prev)))
+            start = None
+        prev = vi
+    if start is not None:
+        ranges.append((float(start), float(prev)))
+    return ranges
+
+
 if __name__ == "__main__":  # small example (CLAUDE.md rule 7)
     for name in ("baseline", "sensitivity"):
         prm = load_params(name)
@@ -128,3 +197,5 @@ if __name__ == "__main__":  # small example (CLAUDE.md rule 7)
         print(f"[{name}] q_c = {c['q_c_veh_per_h']:.0f} veh/h at v_c = {c['v_c_mps']:.1f} m/s "
               f"({c['v_c_mps'] * 2.23694:.1f} mph), k_c = {c['k_c_veh_per_m'] * 1609.344:.1f} veh/mi, "
               f"k_jam = {c['k_jam_veh_per_m'] * 1609.344:.0f} veh/mi")
+        for lo, hi in string_unstable_ranges(prm):
+            print(f"[{name}] string-unstable for {lo:.1f} < v_e < {hi:.1f} m/s ({hi * 2.23694:.0f} mph)")

@@ -43,6 +43,11 @@ Ramp control (S3 baseline: zipper + gap-seeking merge, detector-only controllers
     python -m tmc.evaluate               # full E7 sweep (writes results/E7_*.csv and E7_ttt_vs_X.png)
     python -m tmc.merge_capacity configs/scenario_s3_onramp_zipgap.yaml --from-csv   # E6 capacity estimate
 
+CAV pathway, E9 setting A (braking wave in a 30-vehicle platoon, `configs/scenario_e9_setting_a.yaml`):
+
+    python -m tmc.disturbance --quick    # one run, prints the metrics
+    python -m tmc.disturbance            # human baseline (T_r = 0 and 0.6 s), writes results/E9A_human_baseline*
+
 ## Tests
     pytest
 

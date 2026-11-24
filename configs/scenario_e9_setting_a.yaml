@@ -21,3 +21,30 @@ disturbances:
     b_lead: 2.0
     hold_s: 10.0
     t_start: 10.0
+# E9 setting A CAV matrix (experiment log E9, E9c; run with `python -m tmc.disturbance --matrix`).
+# Humans in every run keep T_r = 0.6 s; equipped vehicles have none. Placement seed = loss seed = the run seed.
+# The lead (vehicle 0) is equipped with probability p like everyone else. Disturbances: both (strong = stress case).
+matrix:
+  human_reaction_time_s: 0.6
+  nominal_cacc: {tau_s: 0.1, delay_s: 0.15}     # Ploeg et al. 2011; usable after 2 ticks
+  groups:
+    nominal:                                    # E9 predictions 2, 3, 5
+      modes: [acc, cacc]
+      p: [0.25, 0.5, 1.0]
+    degraded:                                   # E9 prediction 6 (CACC only, fallback on, max age 5 ticks)
+      modes: [cacc]
+      p: [0.5, 1.0]
+      variants:
+        delay_0.3: {delay_s: 0.3}
+        delay_1.0: {delay_s: 1.0}
+        loss_0.3: {loss_prob: 0.3}
+        outage_5s: {outages: [[10.0, 15.0]]}    # starts with the lead's braking (t_start); choice fixed in E9c
+    sweep:                                      # E9 prediction 7: fallback disabled, p = 1.0
+      modes: [cacc]
+      p: [1.0]
+      max_age_ticks: null
+      delays_s: [0.0, 0.2, 0.3, 0.5, 1.0]
+    tau:                                        # E9 sensitivity (first cut if behind)
+      modes: [acc, cacc]
+      p: [0.5, 1.0]
+      tau_s: 0.5

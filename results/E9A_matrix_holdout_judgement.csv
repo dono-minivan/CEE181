@@ -1,0 +1,19 @@
+criterion,case_id,disturbance,seeds,seeds_vs_human,seeds_vs_acc,seeds_pass,g_mean,pass,min_gap_m,min_time_gap_s,max_decel_equipped,min_gap_human_behind_cav
+acc_vs_human (reported),nominal_acc_p0.25,nominal,4,0.0,,0,0.01168498308503322,,,,,
+disturbance_reduced,nominal_cacc_p0.25,nominal,4,0.0,0.0,0,0.011685026809915889,False,,,,
+acc_vs_human (reported),nominal_acc_p0.5,nominal,4,0.0,,0,0.011009912287093129,,,,,
+disturbance_reduced,nominal_cacc_p0.5,nominal,4,0.0,0.0,0,0.011006064231381948,False,,,,
+acc_vs_human (reported),nominal_acc_p1,nominal,4,4.0,,4,0.008245301612430896,,,,,
+disturbance_reduced,nominal_cacc_p1,nominal,4,4.0,0.0,0,0.008224317514341092,False,,,,
+gaps_acceptable,nominal_acc_p0.25,nominal,4,,,4,,True,14.35280962853858,1.607623669157541,1.003867719369169,14.46722101693399
+gaps_acceptable,nominal_acc_p0.25,strong,4,,,4,,True,7.098344029451027,1.5776099628005813,1.8872584167443722,7.1847725934808295
+gaps_acceptable,nominal_acc_p0.5,nominal,4,,,4,,True,14.225110712543483,1.607623669157541,1.6018358528702208,14.537323889705476
+gaps_acceptable,nominal_acc_p0.5,strong,4,,,4,,True,6.761635276437346,1.577872585718203,1.9887285811306765,7.015774994257299
+gaps_acceptable,nominal_acc_p1,nominal,4,,,4,,True,15.039395159989454,1.6810576612920611,1.6018358528702208,
+gaps_acceptable,nominal_acc_p1,strong,4,,,4,,True,6.677427395902896,1.6675001026280685,1.9887285811306765,
+gaps_acceptable,nominal_cacc_p0.25,nominal,4,,,4,,True,14.352805348009042,1.607623669157541,1.003867719369169,14.467213834742552
+gaps_acceptable,nominal_cacc_p0.25,strong,4,,,4,,True,7.097926391190413,1.5776099628005813,1.8872584167443722,7.184355909994565
+gaps_acceptable,nominal_cacc_p0.5,nominal,4,,,4,,True,14.214063517152226,1.607623669157541,1.6018370532073525,14.537334878349611
+gaps_acceptable,nominal_cacc_p0.5,strong,4,,,4,,True,6.751090077851359,1.577872585718203,1.9887285131567838,7.005112887728728
+gaps_acceptable,nominal_cacc_p1,nominal,4,,,4,,True,15.034694573144634,1.6809648055106865,1.6018370532073525,
+gaps_acceptable,nominal_cacc_p1,strong,4,,,4,,True,6.667755748457921,1.6675006453567403,1.9887285131567838,

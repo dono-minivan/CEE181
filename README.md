@@ -48,6 +48,8 @@ CAV pathway, E9 setting A (braking wave in a 30-vehicle platoon, `configs/scenar
     python -m tmc.disturbance --quick    # one run, prints the metrics
     python -m tmc.cav                    # CAV controller core: one ACC and one CACC follower behind a braking leader
     python -m tmc.disturbance            # human baseline (T_r = 0 and 0.6 s), writes results/E9A_human_baseline*
+    python -m tmc.disturbance --matrix   # E9 CAV matrix, seeds 181-184 (~3 min on 14 cores), writes results/E9A_matrix_*
+    python -m tmc.disturbance --matrix --holdout   # nominal group on held-out seeds 185-188
 
 ## Tests
     pytest
@@ -69,5 +71,6 @@ Claude Code (AI assistant) drafted code, tests, and documentation drafts in this
 - 2026-11-07: multi-lane mainline with MOBIL lane changing, gap-seeking/anticipation switches, E2/E3 diagnostics; virtual detectors and count-audit tests; merge-capacity tool (E4); zipper courtesy merge (E5).
 - 2026-11-08: merge-capacity revision and S3 baseline (E6); ramp meter, `estimation.py`, `forecast.py`, `control.py`, `evaluate.py` and tests (E7); viewer support for the meter signal, detectors and decision traces.
 - 2026-11-15: `report_figures.py` (progress-report figures, `results/PR_*`, congestion-minutes definition).
+- 2026-11-23/24: reaction-time switch, CAV controller core (`cav.py`), CAV integration in `network.py`, E9 setting A harness and matrix runner (`disturbance.py`), E9b capacity re-measurement.
 
 Earlier (Intermediate 1), AI was used to gather papers, format deliverables, summarize topics, and draft verification/fallback plans. No AI output is accepted as a result until it passes the verification tests and the checks recorded in the design record.

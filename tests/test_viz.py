@@ -1,0 +1,50 @@
+"""Viewer export (tmc.viz): what the animation shows must match the simulation it was made from."""
+import json
+
+import numpy as np
+import pandas as pd
+
+from tmc import viz
+from tmc.disturbance import load_setting
+
+
+def test_fallback_runs_merge_consecutive_ticks_per_reason():
+    class R:
+        cav_events = pd.DataFrame({"time_s": [1.0, 1.1, 1.2, 1.5, 1.6, 2.0], "vehicle_id": [3, 3, 3, 3, 3, 4],
+                                   "reason": ["no_message"] * 3 + ["leader_unequipped"] * 2 + ["stale"]})
+    runs = viz.fallback_runs(R())
+    assert runs[3] == [[1.0, 1.3, "no_message"], [1.5, 1.7, "leader_unequipped"]]
+    assert runs[4] == [[2.0, 2.1, "stale"]]
+
+
+def test_e9a_export_matches_the_run(tmp_path):
+    res, name = viz.run_e9a("nominal", "cacc", 0.5, 181)
+    d = viz.export(res, follow=0)
+    assert d["meta"]["open_road"] and d["meta"]["follow"] == 0
+    assert d["meta"]["drivers"] == {"T_r": 0.6, "leader_change": "delayed_gap", "cav": {
+        "p": 0.5, "mode": "cacc", "tau_s": 0.1, "delay_s": 0.15, "broadcast": "command", "controller": "eq1126"}}
+    s = load_setting()
+    assert len(d["veh"]) == int(s["n_followers"]) + 1
+    eq = res.vehicles.set_index("vehicle_id")["equipped"]
+    for row in d["veh"]:
+        assert row[7] == int(eq.loc[row[0]])
+        if row[8]:                                        # fallback runs only for equipped vehicles
+            assert row[7] == 1
+    total = sum(round((b - a) / 0.1) for row in d["veh"] for a, b, _ in row[8])
+    assert total == len(res.cav_events)
+    assert d["meta"]["L"] < 1e5                           # open road clipped to the recorded extent
+    out = viz.write_viewer(res, tmp_path / "v.html", None, 0)
+    html = out.read_text(encoding="utf-8")
+    assert "/*__DATA__*/null" not in html
+    blob = html.split("const D = ", 1)[1].split(";\nconst M = D.meta", 1)[0]
+    assert json.loads(blob)["summary"]["n_equipped"] == int(eq.sum())
+
+
+def test_e9b_human_export_has_no_cav():
+    res, name = viz.run_e9b(1.20, "human", 0.0, 181)
+    d = viz.export(res)
+    assert d["meta"]["drivers"]["cav"] is None
+    assert d["meta"]["drivers"]["leader_change"] == "restart" and d["meta"]["dt_s"] == 0.05
+    assert all(r[7] == 0 and r[8] == [] for r in d["veh"])
+    assert name == "E9B_Xp1.20_human_s181" and not d["meta"]["open_road"]
+    assert np.isclose(d["summary"]["total_travel_time_veh_h"], res.summary()["total_travel_time_veh_h"], atol=0.01)

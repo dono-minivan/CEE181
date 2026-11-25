@@ -103,6 +103,7 @@
       <span>speed</span><span>0 mph</span><span class="bar" id="bar"></span><span id="vmax"></span>
       <span style="margin-left:12px"><span class="chip" style="background:var(--queue)"></span> waiting in point queue (drawn for display, takes no road space)</span>
       <span><span class="chip" style="background:#888;box-shadow:inset 0 0 0 2px #fff"></span> white outline = ramp-origin vehicle</span>
+      <span id="cavLegend" hidden><span class="chip" style="background:#888;position:relative"><span style="position:absolute;left:4px;top:1px;width:6px;height:6px;background:#1f5fd6;border-radius:1px"></span></span> roof marker = equipped (<span id="cavMode"></span>)<span id="fbLegend"> · <span style="color:#e8891b;font-weight:600">orange</span> = CACC in fallback (using its own sensors)</span></span>
     </div>
   </div>
 
@@ -135,7 +136,21 @@ const MPH = 2.236936, FDT = M.frame_dt, NF = M.n_frames, TMAX = (NF - 1) * FDT;
 const QSP = M.s0 + M.veh_len;                     // display spacing for point-queue cars
 const NL = M.n_lanes || 1;
 const VEH = D.veh.map(r => ({ id: r[0], ramp: r[1] === 1, f0: r[2], runs: r[3],
-  xs: Float32Array.from(r[4], v => v / 10), vs: Float32Array.from(r[5], v => v / 10), t: r[6] }));
+  xs: Float32Array.from(r[4], v => v / 10), vs: Float32Array.from(r[5], v => v / 10), t: r[6],
+  eq: r[7] === 1, fb: r[8] || [] }));
+const DRV = M.drivers || { T_r: 0, leader_change: null, cav: null }, CAV = DRV.cav;
+const FB_TEXT = { leader_unequipped: "leader is human (no messages)", no_message: "new leader, no message yet",
+  stale: "newest message too old (> 0.5 s)", comms_off: "communication off" };
+function fallbackAt(v, time) {    // [start, end, reason] run containing `time`, or null
+  let lo = 0, hi = v.fb.length - 1;
+  while (lo <= hi) { const m = (lo + hi) >> 1, r = v.fb[m];
+    if (time < r[0]) hi = m - 1; else if (time >= r[1]) lo = m + 1; else return r; }
+  return null;
+}
+const cavName = () => !CAV ? "" : CAV.mode === "acc" ? "ACC, own sensors"
+  : `CACC, V2V ${CAV.broadcast === "effective" ? "effective command" : "car-following command u"}, delay ${CAV.delay_s} s`;
+const humanName = () => DRV.T_r > 0 ? `human (IDM, reaction delay ${DRV.T_r} s${DRV.leader_change === "restart" ? ", restarted at leader changes" : ""})`
+  : "human (IDM, no reaction delay)";
 const byId = new Map(VEH.map(v => [v.id, v]));
 // ---------- controller (null when the run had none)
 const CT = D.control, DETS = D.detectors || [];
@@ -164,15 +179,25 @@ document.getElementById("title").textContent = `${M.scenario_id}: animated simul
 document.getElementById("subtitle").textContent =
   `demand ${M.demand_id} · params ${M.param_set} · seed ${M.seed} · dt ${M.dt_s} s · ` +
   `segment ${M.L} m, ${NL} lane${NL > 1 ? "s" : ""}` + (R ? ` · on-ramp merge ${R.merge_start}–${R.merge_end} m` : " · no ramp") +
-  ` · computed capacity ${M.q_c_vph} veh/h` + (CT ? ` · ramp control: ${CT.label}` : "");
+  ` · computed capacity ${M.q_c_vph} veh/h` + (CT ? ` · ramp control: ${CT.label}` : "") +
+  ` · drivers: ${humanName()}` + (CAV ? ` · equipped share p = ${CAV.p} (${cavName()}, actuator lag ${CAV.tau_s} s)` : "");
+if (CAV) { document.getElementById("cavLegend").hidden = false; document.getElementById("cavMode").textContent = cavName();
+  document.getElementById("fbLegend").hidden = CAV.mode !== "cacc"; }
 const fmtT = s => { s = Math.max(0, s); const m = Math.floor(s / 60), r = Math.floor(s % 60); return `${m}:${String(r).padStart(2, "0")}`; };
 const S = D.summary;
+const OPEN = !!M.open_road;
 document.getElementById("summary").innerHTML = [
+  ...(OPEN ? [["vehicles", `${S.n_arrived} (lead + followers)`], ["simulated", `${fmtT(S.end_time_s)}`]] : [
   ["vehicles", `${S.n_arrived} (${S.n_arrived_ramp} ramp)`], ["cleared", S.cleared ? `yes, ${fmtT(S.end_time_s)}` : "NO"],
   ["total travel time", `${S.total_travel_time_veh_h} veh·h`], ["ramp-queue wait", `${S.total_ramp_wait_veh_h} veh·h`],
-  ["peak ramp queue", `${S.peak_ramp_queue_veh} veh`], ["peak entry queue", `${S.peak_entry_queue_veh} veh`],
-  ["min mainline speed", `${(S.min_mainline_speed_mps * MPH).toFixed(1)} mph`], ["unmet demand", `${S.unmet_demand_veh} veh`],
+  ["peak ramp queue", `${S.peak_ramp_queue_veh} veh`], ["peak entry queue", `${S.peak_entry_queue_veh} veh`]]),
+  ["min mainline speed", `${(S.min_mainline_speed_mps * MPH).toFixed(1)} mph`], ...(OPEN ? [] : [["unmet demand", `${S.unmet_demand_veh} veh`]]),
   ...(NL > 1 ? [["lane changes", `${S.n_lane_changes}`]] : []),
+  ...(CAV ? [["equipped vehicles", `${S.n_equipped} of ${S.n_arrived}`]] : []),
+  ...(CAV && CAV.mode === "cacc" ? [["CACC fallback", `${S.fallback_ticks} vehicle-ticks`]] : []),
+  ["min net gap", [["human", S.min_gap_m_hh], ["human behind CAV", S.min_gap_m_he], ["equipped", S.min_gap_m_eq]]
+    .filter(([, x]) => x !== null && x !== undefined).map(([k, x]) => `${x} m ${CAV ? k : ""}`).join(" · ") || "–"],
+  ...(CAV ? [["max equipped decel", S.max_decel_mps2_eq === null ? "–" : `${S.max_decel_mps2_eq} m/s²`]] : []),
 ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
 // ---------- state
@@ -306,7 +331,7 @@ function drawRoad(V, detail) {
   }
 }
 
-function car(V, x, y, ang, len, wid, fill, rampOrigin, sel) {
+function car(V, x, y, ang, len, wid, fill, rampOrigin, sel, mark) {
   const { ctx } = V;
   ctx.save(); ctx.translate(V.sx(x), y); ctx.rotate(ang);
   ctx.fillStyle = fill;
@@ -314,6 +339,9 @@ function car(V, x, y, ang, len, wid, fill, rampOrigin, sel) {
   if (ctx.roundRect) ctx.roundRect(-len, -wid / 2, len, wid, Math.min(2, wid / 3)); else ctx.rect(-len, -wid / 2, len, wid);
   ctx.fill();
   if (rampOrigin && len > 3) { ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, wid * 0.16); ctx.stroke(); }
+  if (mark) { ctx.fillStyle = mark;
+    if (len >= 8) { const m = Math.min(len * 0.45, wid * 0.55); ctx.fillRect(-len / 2 - m / 2, -m / 2, m, m); }
+    else { ctx.beginPath(); ctx.arc(-len / 2, -wid / 2 - 3.5, 2.6, 0, 7); ctx.fill(); } }
   if (sel) { ctx.strokeStyle = css("--sel"); ctx.lineWidth = 2.5; ctx.beginPath();
     ctx.arc(-len / 2, 0, Math.max(len, wid) * 0.75 + 4, 0, 7); ctx.stroke(); }
   ctx.restore();
@@ -324,16 +352,20 @@ function drawVehicles(V, fr, a, detail, collect) {
   const len = Math.max(detail ? 3 : 2, M.veh_len * k), wid = LW * (detail ? 0.56 : 0.62);
   const rampAng = R ? Math.atan2(-H, R.approach * k) : 0;
   const pad = M.veh_len + 5;
-  let n = 0, sum = 0;
+  let n = 0, sum = 0, nEq = 0, nFb = 0;
+  const time = (fr + a) * FDT;
   for (const v of VEH) {
     const P = pose(v, fr, a); if (!P) continue;
     if (P.L0 >= 0) { n++; sum += P.spd; }
+    const fbNow = v.eq && v.fb.length ? fallbackAt(v, time) : null;
+    if (v.eq) { nEq++; if (fbNow) nFb++; }
     if (P.x < x0 - pad || P.x > x1 + pad + (R ? R.approach : 0)) continue;
     const y = V.yOf(P.x, P.L);
     let ang = 0;
     if (P.L0 < 0 && P.L1 < 0 && R && P.x < R.merge_start) ang = rampAng;
     else if (P.L0 !== P.L1) ang = Math.atan2(V.yLane(P.L1) - V.yLane(P.L0), Math.max(1, (v.vs[fr - v.f0] || 1) * FDT * k));
-    car(V, P.x, y, ang, len, wid, speedColor(P.spd), v.ramp, detail && selected === v.id);
+    car(V, P.x, y, ang, len, wid, speedColor(P.spd), v.ramp, detail && selected === v.id,
+        v.eq ? (fbNow ? "#e8891b" : "#1f5fd6") : null);
     if (collect) collect.push({ id: v.id, X: V.sx(P.x) - len / 2, Y: y });
   }
   // point queues (display only)
@@ -350,7 +382,7 @@ function drawVehicles(V, fr, a, detail, collect) {
     if (R && qr > 0) { const ex = V.sx(R.entrance), ey = V.rampY(R.entrance);
       if (ex > 0 && ex < V.w + 200) { ctx.textAlign = "right"; ctx.fillText(`ramp queue ${qr}`, Math.min(V.w - 4, ex - 14), ey - LW); } }
   }
-  return { n, mean: n ? sum / n : NaN };
+  return { n, mean: n ? sum / n : NaN, nEq, nFb };
 }
 
 // ---------- render
@@ -379,9 +411,12 @@ function render() {
   document.getElementById("time").textContent = fmtT(t);
   scrub.value = t;
   document.getElementById("stats").innerHTML = [
-    ["time", `${fmtT(t)} (${t.toFixed(0)} s)`], ["on mainline", C.onm[fi]], ["on ramp / accel lane", C.onr[fi]],
-    ["ramp queue (waiting)", C.qr[fi]], ["mainline entry queue", C.qm[fi]], ["arrived / exited", `${C.arrived[fi]} / ${C.exited[fi]}`],
+    ["time", `${fmtT(t)} (${t.toFixed(0)} s)`], ["on mainline", C.onm[fi]],
+    ...(R ? [["on ramp / accel lane", C.onr[fi]], ["ramp queue (waiting)", C.qr[fi]]] : []),
+    ...(OPEN ? [] : [["mainline entry queue", C.qm[fi]], ["arrived / exited", `${C.arrived[fi]} / ${C.exited[fi]}`]]),
     ["mean mainline speed", isNaN(agg.mean) ? "–" : `${(agg.mean * MPH).toFixed(1)} mph`],
+    ...(CAV ? [["equipped on road", agg.nEq]] : []),
+    ...(CAV && CAV.mode === "cacc" ? [["CACC in fallback now", agg.nFb]] : []),
   ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
   renderInfo(fr, a);
   if (CT) renderCtrl();
@@ -457,7 +492,15 @@ function renderInfo(fr, a) {
   const nChanges = v.runs.filter(([, l], i) => i > 0 && l >= 0 && v.runs[i - 1][1] >= 0).length;
   el.className = "";
   el.innerHTML = `<table>
-    <tr><td>vehicle id</td><td>${v.id} (${v.ramp ? "ramp" : "mainline"} origin)</td></tr>
+    <tr><td>vehicle id</td><td>${v.id} (${v.ramp ? "ramp" : "mainline"} origin)${M.follow === v.id ? " · lead vehicle" : ""}</td></tr>
+    <tr><td>driver</td><td>${M.follow === v.id ? `scripted braking profile (the disturbance)${v.eq ? "; equipped, so it broadcasts the profile" : ""}`
+      : v.eq ? `equipped: ${cavName()}` : humanName()}</td></tr>
+    ${v.eq && CAV && CAV.mode === "cacc" ? `<tr><td>leader acceleration from</td><td>${(() => {
+      const r = P ? fallbackAt(v, t) : null;
+      return !P ? "–" : r ? `<span style="color:#e8891b;font-weight:600">fallback to own sensors</span> · ${FB_TEXT[r[2]] || r[2]} (${r[0].toFixed(1)}–${r[1].toFixed(1)} s)`
+        : "V2V message from its leader"; })()}</td></tr>
+      <tr><td>fallback periods</td><td>${v.fb.length} (${v.fb.reduce((s, r) => s + r[1] - r[0], 0).toFixed(1)} s in total)</td></tr>` : ""}
+    ${v.eq && CAV && CAV.mode === "acc" ? `<tr><td>leader acceleration from</td><td>own sensors (differenced, filtered)</td></tr>` : ""}
     <tr><td>now</td><td>${where}${P ? ` · x = ${P.x.toFixed(1)} m · ${(P.spd * MPH).toFixed(1)} mph` : ""}</td></tr>
     <tr><td>arrived</td><td>${f(arr)}</td></tr>
     <tr><td>entered road</td><td>${f(ent)}${ent !== null && arr !== null ? ` · waited ${(ent - arr).toFixed(1)} s` : ""}</td></tr>
@@ -508,6 +551,10 @@ cuC.addEventListener("pointerup", e => {
   }
   drag = null; cuC.classList.remove("dragging");
 });
+if (M.follow !== null && M.follow !== undefined && byId.has(M.follow)) {
+  selected = M.follow; document.getElementById("follow").checked = true;
+  viewW = 1200; document.getElementById("zoom").value = "1200";
+}
 // deep link: viewer.html#t=1200&zoom=300&x=1600 opens at that time / width / position
 for (const [k, v] of new URLSearchParams(location.hash.slice(1))) {
   if (k === "t") t = Math.max(0, Math.min(TMAX, +v || 0));

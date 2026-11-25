@@ -33,6 +33,12 @@ Ramp control in the viewer (meter signal, detectors, the controller's decision a
     python -m tmc.viz --e7 1.35 --control none --open        # same demand and seed, no signal
     python -m tmc.viz --e7 1.10 --control pretimed:800 --open
     python -m tmc.viz configs/scenario_s3_onramp_zipgap.yaml --control alinea:0.20 --seed 182 --open
+
+E9 viewers (equipped vehicles carry a roof marker, orange while a CACC vehicle is in fallback; click a car to see its driver type and where its leader-acceleration input comes from):
+
+    python -m tmc.viz --e9b 1.35 --mode cacc_eff --p 0.5 --open   # setting B: S3r2 merge, modes human / acc / cacc / cacc_eff
+    python -m tmc.viz --e9a nominal --mode cacc --p 0.5 --open     # setting A: platoon braking wave, follows the lead
+    python -m tmc.viz --examples                                   # regenerate every viewer in results/
  Add `#t=1200&zoom=300&x=1600` to the URL to open at a given time, width, and position.
 
 Ramp control (S3 baseline: zipper + gap-seeking merge, detector-only controllers):
@@ -88,6 +94,7 @@ Claude Code (AI assistant) drafted code, tests, and documentation drafts in this
 - 2026-11-15: `report_figures.py` (progress-report figures, `results/PR_*`, congestion-minutes definition).
 - 2026-11-23/24: reaction-time switch, CAV controller core (`cav.py`), CAV integration in `network.py`, E9 setting A harness and matrix runner (`disturbance.py`), E9b capacity re-measurement.
 - 2026-11-24: Ploeg et al. 2011 CACC controller and string-stability theory (`ploeg.py`), E9d extension runner and tests.
+- 2026-11-25: viewer update for E9 (`viz.py`, `viewer_template.html`: equipped markers, fallback state, driver panel, `--e9b` / `--e9a` / `--examples`, `tests/test_viz.py`).
 - 2026-11-25: E9 setting B runner (`setting_b.py`), every-step gap tracker, reaction-delay restart at leader changes (S3r2), effective-command V2V broadcast option, E9b2 capacity re-measurement.
 
 Earlier (Intermediate 1), AI was used to gather papers, format deliverables, summarize topics, and draft verification/fallback plans. No AI output is accepted as a result until it passes the verification tests and the checks recorded in the design record.

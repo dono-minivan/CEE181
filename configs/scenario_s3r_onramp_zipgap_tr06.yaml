@@ -11,6 +11,7 @@ road:
   lane_id: 0
 drivers:
   reaction_time_s: 0.6           # human reaction delay on car-following (E9 human baseline)
+  leader_change_delay: delayed_gap   # E9b rule (2026-11-23); superseded for setting B by S3r2 (E9e)
 sim:
   dt_s: 0.1
   record_every_s: 1.0

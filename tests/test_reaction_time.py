@@ -173,3 +173,50 @@ def test_time_step_sensitivity_with_reaction_time(key):
     spread_tr = _dt_spread(T_R, key)
     assert spread_tr < 0.02
     assert spread_tr < _dt_spread(0.0, key) + 0.005
+
+
+# --------------------------------------------------------------------------- leader-change rule (E9e, 2026-11-25)
+
+S3R = ROOT / "configs"
+
+
+def _s3r(rule: str, t_end: float = 900.0) -> ScenarioConfig:
+    c = ScenarioConfig.from_yaml(S3R / "scenario_s3r_onramp_zipgap_tr06.yaml")
+    c.leader_change_delay = rule
+    c.max_time_s = t_end
+    c.dt_s = 0.05
+    return c
+
+
+def test_restart_rule_is_identical_without_leader_changes():
+    """Setting A (one lane, no entries, no merges): 'restart' must not change a single number."""
+    from tmc.disturbance import ScriptedLead, load_setting, platoon_config
+    s = load_setting()
+    dist = s["disturbances"]["nominal"]
+    out = []
+    for rule in ("delayed_gap", "restart"):
+        cfg_ = platoon_config(s, P, 0.6, None, None)
+        cfg_.leader_change_delay = rule
+        res = FreewaySegment(P, cfg_, lead_accel=ScriptedLead(dist, float(s["v_eq_mps"]), P.a, cfg_.dt_s)).run()
+        out.append(res.trajectories[["position_m", "speed_mps"]].to_numpy())
+    assert np.array_equal(out[0], out[1])
+
+
+def test_restart_rule_removes_stale_gap_braking_at_the_merge():
+    """S3r merge at dt 0.05: the old rule produces decelerations far beyond any physical limit right after
+    merges (a stale, tiny delayed gap); with 'restart' the human maximum stays within the IDM's range
+    for real gaps and the run stays collision-free and conserving."""
+    old = FreewaySegment(P, _s3r("delayed_gap")).run()
+    c = _s3r("restart")
+    new = FreewaySegment(P, c).run()
+    assert old.gap_stats["max_decel_mps2_hh"] > 100.0          # the artifact (documents why the rule exists)
+    assert new.gap_stats["max_decel_mps2_hh"] < 20.0
+    assert new.min_gap_m > 0
+    s = new.summary()
+    assert s["n_exited"] + s["on_road_at_end_veh"] + s["unmet_demand_veh"] == s["n_arrived"]
+
+
+def test_leader_change_rule_rejects_unknown_values():
+    c = _s3r("sometimes")
+    with pytest.raises(ValueError):
+        FreewaySegment(P, c)

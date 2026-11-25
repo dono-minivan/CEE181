@@ -1,6 +1,8 @@
 """Measured merge capacity (design record section 2, option (c)).
 
-    python -m tmc.merge_capacity [scenario.yaml] [--quick | --from-csv] [--share=0.28] [--demands=800:2000:100] [--dt-check]
+    python -m tmc.merge_capacity [scenario.yaml] [--quick | --from-csv] [--share=0.28] [--demands=800:2000:100] [--dt-check [--dts=0.025,0.05,0.1]]
+
+--dt-check compares served flow against the scenario's own dt (0.1 in S1-S3r; 0.05 in S3r2, E9b2).
 
 --from-csv re-estimates from results/<scenario_id>_merge_capacity_runs.csv without re-simulating
 (the full sweep is 132 one-hour runs, ~20 min on 6 cores).
@@ -172,11 +174,19 @@ def main(argv: list[str]) -> None:
     out = ROOT / "results"
     runs_csv = out / f"{base.scenario_id}_merge_capacity_runs.csv"
     if "--dt-check" in argv:                   # E6 criterion 5 on one saturated case
-        d = dt_check(path)
+        dts = (0.05, 0.1, 0.2)
+        for a in argv:
+            if a.startswith("--dts="):
+                dts = tuple(float(x) for x in a.split("=", 1)[1].split(","))
+        ref = base.dt_s
+        if not any(np.isclose(ref, d) for d in dts):
+            raise SystemExit(f"--dts must include the scenario dt ({ref})")
+        d = dt_check(path, dts=dts)
         d.to_csv(out / f"{base.scenario_id}_merge_capacity_dtcheck.csv", index=False)
         m = d.groupby("dt_s")["served_vph"].mean()
         print(m.round(1).to_string())
-        print(f"max deviation from dt = 0.1: {100 * (m / m.loc[0.1] - 1).abs().max():.1f}%")
+        r = m.loc[[x for x in m.index if np.isclose(x, ref)][0]]
+        print(f"max deviation from dt = {ref}: {100 * (m / r - 1).abs().max():.2f}%")
         return
     if "--from-csv" in argv:
         df = classify(pd.read_csv(runs_csv))

@@ -110,6 +110,8 @@ class ScenarioConfig:
     detectors: list = field(default_factory=list)   # [DetectorSpec, ...] (tmc.detectors)
     control: dict | None = None                     # ramp-meter controller spec (tmc.control.make_controller)
     reaction_time_s: float = 0.0                    # human reaction delay T_r on car-following inputs (0 = off)
+    leader_change_delay: str = "delayed_gap"        # T_r rule after a leader change: 'delayed_gap' (E9b, 2026-11-23)
+                                                    # | 'restart' (E9e, team 2026-11-25); see _human_car_following
     cav: dict | None = None                         # equipped vehicles (tmc.cav), keys in FreewaySegment._init_cav
 
     @classmethod
@@ -166,6 +168,7 @@ class ScenarioConfig:
             detectors=[DetectorSpec.from_dict(x) for x in (d.get("detectors") or [])],
             control=d.get("control"),
             reaction_time_s=float((d.get("drivers") or {}).get("reaction_time_s", 0.0)),
+            leader_change_delay=str((d.get("drivers") or {}).get("leader_change_delay", "delayed_gap")),
             cav=d.get("cav"),
         )
 
@@ -392,6 +395,12 @@ class FreewaySegment:
             self._hx = np.full((D + 1, n), np.nan)
             self._hv = np.full((D + 1, n), np.nan)
             self._first = np.full(n, np.iinfo(np.int64).max, dtype=np.int64)
+        if cfg.leader_change_delay not in ("delayed_gap", "restart"):
+            raise ValueError(f"leader_change_delay must be 'delayed_gap' or 'restart', got {cfg.leader_change_delay!r}")
+        self._restart = self.D > 0 and cfg.leader_change_delay == "restart"
+        if self._restart:   # current lane leader of each vehicle (-1 = none) and the step it became the leader
+            self._leader = np.full(n, -2, dtype=np.int64)
+            self._leader_since = np.zeros(n, dtype=np.int64)
 
     @property
     def main(self) -> _Lane:
@@ -716,6 +725,11 @@ class FreewaySegment:
                 self._hx[slot, ln.ids] = ln.x
                 self._hv[slot, ln.ids] = ln.v
                 self._first[ln.ids] = np.minimum(self._first[ln.ids], self._k)
+                if self._restart:
+                    lead = np.concatenate(([-1], ln.ids[:-1]))
+                    new = self._leader[ln.ids] != lead
+                    self._leader[ln.ids[new]] = lead[new]
+                    self._leader_since[ln.ids[new]] = self._k
 
     def _car_following(self, ln: _Lane, s, dv, delayed: bool) -> np.ndarray:
         """IDM toward the lane leader. With a reaction delay (delayed=True, T_r > 0), all inputs are taken
@@ -723,6 +737,11 @@ class FreewaySegment:
         state (all lanes share one position coordinate). Current, undelayed values are used for a vehicle
         (or pair) without T_r of history yet, i.e. just after entry, and when the delayed gap to a new
         leader is <= 0 (it was behind the follower T_r ago). Team decision 2026-11-23.
+        leader_change_delay = 'restart' (team decision 2026-11-25, experiment log E9e): current values are
+        also used for T_r after ANY leader change (merge, cut-in, leader exit), i.e. the delay restarts with
+        the new pair. Reason: with 'delayed_gap', a just-merged vehicle's delayed gap to its new leader is
+        taken from when the two were side by side, positive but tiny (median 0.19 m), and the IDM then
+        returns decelerations of 1e3-1e5 m/s^2 (a stop within one step on the mainline).
         delayed=True also marks the APPLIED accelerations: there, equipped vehicles get their controller's
         realized acceleration instead (no reaction delay). Other demands (lane end, gap seeking, courtesy,
         yielding) are still applied on top as a min, for humans and equipped vehicles alike."""
@@ -748,6 +767,8 @@ class FreewaySegment:
         if len(ln) > 1:
             s_d = xd[:-1] - xd[1:] - p.length
             pair = ok[1:] & ok[:-1]
+            if self._restart:      # E9e: the pair must have been leader-follower for at least T_r
+                pair &= self._leader_since[ids[1:]] <= k_d
             pair &= np.where(pair, s_d, -1.0) > 0
             s_in[1:] = np.where(pair, s_d, s[1:])
             dv_in[1:] = np.where(pair, vd[1:] - vd[:-1], dv[1:])

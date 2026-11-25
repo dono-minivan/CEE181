@@ -44,6 +44,7 @@ import yaml
 
 from tmc.detectors import DetectorBank, DetectorSpec
 from tmc.cav import TICK_S, CAVController, V2VChannel, acc_command
+from tmc.ploeg import PloegController
 from tmc.idm import IDMParams, acceleration, ballistic_update, load_params
 
 MAIN, RAMP = 0, -1   # MAIN = rightmost mainline lane; further mainline lanes are 1, 2, ...
@@ -609,7 +610,10 @@ class FreewaySegment:
     def _init_cav(self, c: dict | None, n: int) -> None:
         """cav config keys: p_equipped (0-1), mode ('acc' | 'cacc'), placement_seed, tau_s (0.1),
         delay_s (0.15), loss_prob (0), loss_seed, outages ([[start_s, end_s], ...]), comms (True),
-        max_age_ticks (5; null = no age limit, the E9 mechanism check with fallback disabled).
+        max_age_ticks (5; null = no age limit, the E9 mechanism check with fallback disabled),
+        controller ('eq1126' = the E9 ACC/CACC of tmc.cav, default | 'ploeg' = tmc.ploeg, E9d, setting A only)
+        with, for 'ploeg': ff ('none' | 'sensor' | 'v2v'), spacing ('ctg' | 'idm'), h_s (1.0), r_m (2.0).
+        For 'ploeg' the V2V channel exists iff ff = 'v2v'; mode is ignored.
         Equipped vehicles are drawn once per vehicle ID with their own RNG, so arrivals are unchanged."""
         self.equipped = np.zeros(n, dtype=bool)
         self.ctl: dict[int, CAVController] = {}
@@ -620,7 +624,17 @@ class FreewaySegment:
             return
         p_eq = float(c["p_equipped"])
         self.equipped = np.random.default_rng(c.get("placement_seed")).random(n) < p_eq
-        self.cav_mode = str(c.get("mode", "acc"))
+        self.cav_controller = str(c.get("controller", "eq1126"))
+        if self.cav_controller == "ploeg":
+            if self.ramp is not None or self.cfg.n_lanes != 1:
+                raise ValueError("the Ploeg controller is for E9 setting A only (one lane, no ramp)")
+            self.ploeg_kw = {"ff": str(c.get("ff", "v2v")), "spacing": str(c.get("spacing", "ctg")),
+                             "h_s": float(c.get("h_s", 1.0)), "r_m": float(c.get("r_m", 2.0))}
+            self.cav_mode = "cacc" if self.ploeg_kw["ff"] == "v2v" else "acc"
+        elif self.cav_controller == "eq1126":
+            self.cav_mode = str(c.get("mode", "acc"))
+        else:
+            raise ValueError(f"cav.controller must be 'eq1126' or 'ploeg', got {self.cav_controller!r}")
         if self.cav_mode not in ("acc", "cacc"):
             raise ValueError(f"cav.mode must be 'acc' or 'cacc', got {self.cav_mode!r}")
         self.cav_tau = float(c.get("tau_s", 0.1))
@@ -657,8 +671,12 @@ class FreewaySegment:
                     continue
                 ctl = self.ctl.get(vid)
                 if ctl is None:
-                    ctl = self.ctl[vid] = CAVController(vid, self.cav_mode, p, tau_s=self.cav_tau,
-                                                        max_age_ticks=self.cav_max_age)
+                    if self.cav_controller == "ploeg":
+                        ctl = self.ctl[vid] = PloegController(vid, p, tau_s=self.cav_tau,
+                                                              max_age_ticks=self.cav_max_age, **self.ploeg_kw)
+                    else:
+                        ctl = self.ctl[vid] = CAVController(vid, self.cav_mode, p, tau_s=self.cav_tau,
+                                                            max_age_ticks=self.cav_max_age)
                 leader = int(ln.ids[i - 1]) if i > 0 else None
                 out = ctl.command(tick, float(ln.v[i]), float(s[i]), float(dv[i]), leader, self.channel,
                                   bool(self.equipped[leader]) if leader is not None else False)

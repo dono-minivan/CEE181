@@ -48,3 +48,26 @@ matrix:
       modes: [acc, cacc]
       p: [0.5, 1.0]
       tau_s: 0.5
+# E9d extension (experiment log E9d): Ploeg et al. 2011 CACC as a positive control, setting A only.
+# Run with `python -m tmc.disturbance --matrix --set e9d`. Same human baseline, tau, delay, tick and fallback rules.
+matrix_e9d:
+  human_reaction_time_s: 0.6
+  nominal_cacc: {tau_s: 0.1, delay_s: 0.15}
+  groups:
+    pl_idm:                       # spacing = IDM equilibrium gap (same steady state as humans)
+      spacing: idm
+      ff: [none, sensor, v2v]
+      p: [0.5, 1.0]
+    pl_short:                     # Ploeg Eq. 1, r = s0 = 2 m, h = 1.0 s (D1, D2); p = 1.0 only
+      spacing: ctg
+      h_s: 1.0
+      r_m: 2.0
+      ff: [none, sensor, v2v]
+      p: [1.0]
+    pl_sweep:                     # PL-short, v2v, fallback disabled
+      spacing: ctg
+      h_s: 1.0
+      r_m: 2.0
+      p: [1.0]
+      max_age_ticks: null
+      delays_s: [0.0, 0.2, 0.3, 0.5, 1.0]

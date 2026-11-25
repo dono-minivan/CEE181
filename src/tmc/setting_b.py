@@ -5,11 +5,12 @@
     python -m tmc.setting_b --run 1.35       # every case at one X_peak, seeds 181-184 (appends to E9B_runs.csv)
     python -m tmc.setting_b --holdout 1.35 acc 1.0   # one case + the human baseline on held-out seeds 185-188
     python -m tmc.setting_b --judge          # judgement + figures from results/E9B_runs.csv (no simulation)
-    add --dt 0.05 to --run / --holdout if the D3 check fails (then ALL of setting B runs at dt 0.05)
+    dt is 0.05 s for all of setting B (D3 failed on S3r); --dt X overrides it for diagnostics only
 
 Scenario (E9e): S3r (S3 merge, humans with T_r = 0.6 s), ramp share r = 0.28, E7 demand profile
-0.85 / X_peak / 0.60 (0-600 / 600-1500 / 1500-2400 s) against C_m = the S3r saturated discharge read from
-results (E9b, 978 veh/h), no ramp metering, run until clear. Cases: human; ACC and CACC at p = 0.25 / 0.5 /
+0.85 / X_peak / 0.60 (0-600 / 600-1500 / 1500-2400 s) against C_m = the S3r2 saturated discharge read from
+results (E9b2), no ramp metering, run until clear, dt 0.05 s (D3). S3r2 = S3r with the reaction delay
+restarted at leader changes (team decision 2026-11-25). Cases: human; ACC and CACC at p = 0.25 / 0.5 /
 1.0 (tau 0.1 s, delay 0.15 s, fallback at age > 5 ticks). Placement seed = run seed.
 
 Metrics use simulator truth (evaluation only, CLAUDE.md rule 2). Judgement rules (E9e D1, D2, D4):
@@ -17,9 +18,10 @@ Metrics use simulator truth (evaluation only, CLAUDE.md rule 2). Judgement rules
   throughput    served flow 600-2100 s, mean over seeds, not more than 2% below human
   D1 reduced    CACC congested minutes at M_mrg lower than the same-seed human AND same-seed ACC run by
                 >= 10% and >= 1.0 min, in >= 3 of 4 seeds (E7c congestion definition)
-  D2 gaps       net gap >= 1 m (every follower), equipped max deceleration <= 4 m/s^2, time gap >= 0.5 s
-                at v > 5 m/s; if the same-seed human run itself goes below 0.5 s, the time-gap bound for
-                that seed becomes the human run's minimum ("no worse than human"), and that is reported.
+  D2 gaps       net gap >= 1 m and time gap >= 0.5 s at v > 5 m/s (every follower); if the same-seed human
+                run itself goes below a bound, that seed's bound becomes the human run's minimum ("no worse
+                than human"; amended for the 1 m bound 2026-11-25, before any CAV run), reported. Equipped
+                max deceleration <= 4 m/s^2 stays absolute.
 """
 from __future__ import annotations
 
@@ -36,8 +38,10 @@ from tmc.network import GAP_TYPES, FreewaySegment, ScenarioConfig
 from tmc.report_figures import congested_intervals, critical_occupancy
 
 ROOT = Path(__file__).resolve().parents[2]
-S3R = ROOT / "configs" / "scenario_s3r_onramp_zipgap_tr06.yaml"
-CAP_CSV = ROOT / "results" / "S3r_onramp_zipgap_tr06_nocontrol_merge_capacity.csv"
+# S3r2 = S3r with the reaction delay restarted at leader changes (team 2026-11-25, E9e); C_m from E9b2.
+S3R = ROOT / "configs" / "scenario_s3r2_onramp_zipgap_tr06_restart.yaml"
+CAP_CSV = ROOT / "results" / "S3r2_onramp_zipgap_tr06_restart_nocontrol_merge_capacity.csv"
+DT_B = 0.05                                  # E9e D3 failed on S3r: all of setting B runs at dt 0.05
 RES = ROOT / "results"
 RUNS_CSV = RES / "E9B_runs.csv"
 SEEDS = [181, 182, 183, 184]
@@ -54,16 +58,16 @@ FALLBACK_REASONS = ("leader_unequipped", "no_message", "stale", "comms_off")
 
 
 def merge_capacity_s3r(share: float = RAMP_SHARE) -> float:
-    """C_m of S3r (E9b), read from results, not copied."""
+    """C_m of S3r2 (E9b2), read from results, not copied."""
     est = pd.read_csv(CAP_CSV)
     row = est.loc[np.isclose(est["ramp_share"], share)]
     if row.empty:
-        raise ValueError(f"no measured S3r capacity for ramp share {share}")
+        raise ValueError(f"no measured S3r2 capacity for ramp share {share}")
     return float(row["sat_discharge_vph"].iloc[0])
 
 
 def build_config(x_peak: float, seed: int, c_m: float, mode: str = "human", p: float = 0.0,
-                 dt: float = 0.1) -> ScenarioConfig:
+                 dt: float = DT_B) -> ScenarioConfig:
     cfg = ScenarioConfig.from_yaml(S3R)
     cfg.seed = seed
     cfg.ramp.seed = None
@@ -176,22 +180,25 @@ def d1_reduced(df: pd.DataFrame, p: float) -> dict:
 
 
 def gaps_ok(df: pd.DataFrame, mode: str, p: float) -> dict:
-    """E9e D2, per seed: 1 m every follower, equipped decel <= 4, time gap >= min(0.5, human same-seed min)."""
+    """E9e D2 (amended 2026-11-25, before any CAV run), per seed: net gap >= min(1 m, same-seed human-run
+    min), time gap >= min(0.5 s, same-seed human-run min), equipped max deceleration <= 4 m/s^2 (absolute)."""
     hum = df[df["mode"] == "human"].set_index("seed")
     rows = df[(df["mode"] == mode) & np.isclose(df["p"], p)].set_index("seed")
     gap_cols = [f"min_gap_m_{k}" for k in GAP_TYPES]
     tg_cols = [f"min_time_gap_s_{k}" for k in GAP_TYPES]
-    out, relaxed = [], 0
+    out, relaxed_tg, relaxed_g = [], 0, 0
     for seed, r in rows.iterrows():
-        bound = TIME_GAP_MIN_S
+        b_tg, b_g = TIME_GAP_MIN_S, GAP_MIN_M
         if seed in hum.index and hum.loc[seed, "min_time_gap_s_hh"] < TIME_GAP_MIN_S:
-            bound, relaxed = float(hum.loc[seed, "min_time_gap_s_hh"]), relaxed + 1
+            b_tg, relaxed_tg = float(hum.loc[seed, "min_time_gap_s_hh"]), relaxed_tg + 1
+        if seed in hum.index and hum.loc[seed, "min_gap_m_hh"] < GAP_MIN_M:
+            b_g, relaxed_g = float(hum.loc[seed, "min_gap_m_hh"]), relaxed_g + 1
         g = np.nanmin(r[gap_cols].to_numpy(float))
         tg = np.nanmin(r[tg_cols].to_numpy(float))
         dec = r.get("max_decel_mps2_eq", np.nan)
-        out.append(bool(g >= GAP_MIN_M and tg >= bound - 1e-12 and not (dec > DECEL_MAX)))
+        out.append(bool(g >= b_g - 1e-12 and tg >= b_tg - 1e-12 and not (dec > DECEL_MAX)))
     return {"gaps_ok": bool(all(out)) if out else None, "gaps_seeds_pass": int(sum(out)),
-            "time_gap_bound_relaxed_seeds": relaxed}
+            "time_gap_bound_relaxed_seeds": relaxed_tg, "net_gap_bound_relaxed_seeds": relaxed_g}
 
 
 def judge(df: pd.DataFrame) -> pd.DataFrame:
@@ -249,7 +256,8 @@ def plot(df: pd.DataFrame) -> list[Path]:
                 ax.plot([p + off for p, _ in pts], [s.mean() for _, s in pts], color=color, marker=mk, label=lab)
             ax.set_xlabel("penetration p (share of equipped vehicles)")
             ax.set_ylabel(ylab)
-            ax.set_title(f"E9 setting B | S3r merge, X_m peak {x:.2f} (C_m 978)\nmean line, dots = seeds 181-184")
+            ax.set_title(f"E9 setting B | S3r2 merge, X_m peak {x:.2f} (C_m {g['c_m_vph'].iloc[0]:.0f} veh/h)\n"
+                         f"dt {g['dt_s'].iloc[0]} s | mean line, dots = seeds 181-184")
             ax.grid(alpha=0.3)
             ax.legend(fontsize=8)
         fig.tight_layout()
@@ -296,7 +304,7 @@ def main(argv: list[str]) -> None:
     pd.set_option("display.width", 240)
     pd.set_option("display.max_columns", 40)
     c_m = merge_capacity_s3r()
-    dt = float(argv[argv.index("--dt") + 1]) if "--dt" in argv else 0.1
+    dt = float(argv[argv.index("--dt") + 1]) if "--dt" in argv else DT_B
     print(f"C_m(S3r, r={RAMP_SHARE}) = {c_m:.1f} veh/h, dt = {dt} s")
     if "--quick" in argv:
         df = sweep([(1.35, "human", 0.0, 181, c_m, dt), (1.35, "acc", 1.0, 181, c_m, dt)], processes=2)

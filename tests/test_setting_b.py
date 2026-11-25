@@ -79,22 +79,26 @@ def test_gap_tracker_human_only_has_no_equipped_types():
 
 # --------------------------------------------------------------------------- scenario build
 
-def test_capacity_is_read_from_the_e9b_result():
-    assert sb.merge_capacity_s3r() == pytest.approx(977.71, abs=0.01)
+def test_capacity_is_read_from_the_e9b2_result():
+    est = pd.read_csv(sb.CAP_CSV)
+    assert "S3r2" in sb.CAP_CSV.name and "s3r2" in sb.S3R.name
+    row = est.loc[np.isclose(est["ramp_share"], 0.28), "sat_discharge_vph"]
+    assert sb.merge_capacity_s3r() == pytest.approx(float(row.iloc[0]))
 
 
 @pytest.mark.parametrize("x", [1.20, 1.35])
 def test_build_config_demand_and_cav(x):
     c_m = sb.merge_capacity_s3r()
     h = sb.build_config(x, 182, c_m)
-    assert h.cav is None and h.control is None and h.seed == 182 and h.dt_s == 0.1
+    assert h.cav is None and h.control is None and h.seed == 182 and h.dt_s == 0.05
+    assert h.leader_change_delay == "restart"
     peak = h.demand_profile[1][2] + h.ramp.demand_profile[1][2]
     assert peak == pytest.approx(x * c_m)
     assert h.ramp.demand_profile[1][2] / peak == pytest.approx(0.28)
     assert [r[:2] for r in h.demand_profile] == [[0.0, 600.0], [600.0, 1500.0], [1500.0, 2400.0]]
-    a = sb.build_config(x, 182, c_m, "cacc", 0.5, dt=0.05)
+    a = sb.build_config(x, 182, c_m, "cacc", 0.5, dt=0.1)
     assert a.cav == {"p_equipped": 0.5, "mode": "cacc", "placement_seed": 182, "tau_s": 0.1, "delay_s": 0.15}
-    assert a.dt_s == 0.05
+    assert a.dt_s == 0.1
     assert h.reaction_time_s == a.reaction_time_s == 0.6      # humans keep T_r in every setting B run
 
 
@@ -185,9 +189,14 @@ def test_gaps_time_bound_relaxes_to_the_same_seed_human_minimum():
     assert not sb.gaps_ok(_table(human + acc), "acc", 1.0)["gaps_ok"]
 
 
-def test_gaps_net_gap_and_decel_stay_absolute():
-    human = _runs(("human", 0.0), [10] * 4, **{"min_gap_m_hh": [0.5] * 4})
-    acc = _runs(("acc", 1.0), [10] * 4, **{"min_gap_m_eq": [0.8, 5, 5, 5]})
+def test_gaps_net_gap_bound_relaxes_to_human_and_decel_stays_absolute():
+    human = _runs(("human", 0.0), [10] * 4, **{"min_gap_m_hh": [0.5, 0.8, 5, 5]})
+    acc = _runs(("acc", 1.0), [10] * 4, **{"min_gap_m_eq": [0.6, 0.8, 5, 5]})
+    r = sb.gaps_ok(_table(human + acc), "acc", 1.0)
+    assert r["gaps_ok"] and r["net_gap_bound_relaxed_seeds"] == 2
+    acc = _runs(("acc", 1.0), [10] * 4, **{"min_gap_m_he": [0.4, 5, 5, 5]})          # worse than human
+    assert not sb.gaps_ok(_table(human + acc), "acc", 1.0)["gaps_ok"]
+    acc = _runs(("acc", 1.0), [10] * 4, **{"min_gap_m_eq": [5, 5, 0.9, 5]})           # human seed fine: 1 m
     assert not sb.gaps_ok(_table(human + acc), "acc", 1.0)["gaps_ok"]
     acc = _runs(("acc", 1.0), [10] * 4, **{"max_decel_mps2_eq": [4.5, 2, 2, 2]})
     assert not sb.gaps_ok(_table(human + acc), "acc", 1.0)["gaps_ok"]

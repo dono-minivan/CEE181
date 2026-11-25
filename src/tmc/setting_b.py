@@ -269,8 +269,9 @@ def plot(df: pd.DataFrame) -> list[Path]:
                 ax.plot([p + off for p, _ in pts], [s.mean() for _, s in pts], color=color, marker=mk, label=lab)
             ax.set_xlabel("penetration p (share of equipped vehicles)")
             ax.set_ylabel(ylab)
-            ax.set_title(f"E9 setting B | S3r2 merge, X_m peak {x:.2f} (C_m {g['c_m_vph'].iloc[0]:.0f} veh/h)\n"
-                         f"dt {g['dt_s'].iloc[0]} s | mean line, dots = seeds 181-184")
+            ax.set_title(f"E9 setting B | S3r2, X_m peak {x:.2f}\n"
+                         f"C_m {g['c_m_vph'].iloc[0]:.0f} veh/h, dt {g['dt_s'].iloc[0]} s | line = mean, dots = seeds 181-184",
+                         fontsize=10)
             ax.grid(alpha=0.3)
             ax.legend(fontsize=8)
         fig.tight_layout()

@@ -53,6 +53,13 @@ CAV pathway, E9 setting A (braking wave in a 30-vehicle platoon, `configs/scenar
     python -m tmc.ploeg                  # Ploeg et al. 2011 CACC: string-stability theory (Eq. 17) + a one-follower example
     python -m tmc.disturbance --matrix --set e9d   # E9d extension (Ploeg controller), writes results/E9D_*
 
+CAV pathway, E9 setting B (S3r2 merge, humans with T_r = 0.6 s restarted at leader changes, dt 0.05 s; experiment log E9e):
+
+    python -m tmc.setting_b --quick              # human vs ACC p = 1, X 1.35, seed 181 (~1 min)
+    python -m tmc.setting_b --run 1.35 --with-eff   # every case, seeds 181-184, writes results/E9B_runs.csv, E9B_judgement.csv, figures
+    python -m tmc.setting_b --holdout 1.35 all   # every case on held-out seeds 185-188
+    python -m tmc.merge_capacity configs/scenario_s3r2_onramp_zipgap_tr06_restart.yaml --share=0.28 --demands=800:2000:100   # E9b2 C_m
+
 ## Tests
     pytest
 
@@ -75,5 +82,6 @@ Claude Code (AI assistant) drafted code, tests, and documentation drafts in this
 - 2026-11-15: `report_figures.py` (progress-report figures, `results/PR_*`, congestion-minutes definition).
 - 2026-11-23/24: reaction-time switch, CAV controller core (`cav.py`), CAV integration in `network.py`, E9 setting A harness and matrix runner (`disturbance.py`), E9b capacity re-measurement.
 - 2026-11-24: Ploeg et al. 2011 CACC controller and string-stability theory (`ploeg.py`), E9d extension runner and tests.
+- 2026-11-25: E9 setting B runner (`setting_b.py`), every-step gap tracker, reaction-delay restart at leader changes (S3r2), effective-command V2V broadcast option, E9b2 capacity re-measurement.
 
 Earlier (Intermediate 1), AI was used to gather papers, format deliverables, summarize topics, and draft verification/fallback plans. No AI output is accepted as a result until it passes the verification tests and the checks recorded in the design record.

@@ -196,6 +196,10 @@ def generate_arrivals(profile, process: str, seed: int | None) -> np.ndarray:
 LC_COLUMNS = ["time_s", "vehicle_id", "from_lane", "to_lane", "position_m", "speed_mps", "kind"]
 
 
+GAP_TYPES = ("eq", "hh", "he")   # follower types for SimResult.gap_stats (equipped, human-human, human-behind-equipped)
+TIME_GAP_MIN_SPEED = 5.0           # m/s; time gaps are evaluated only above this speed (design record section 7)
+
+
 @dataclass
 class SimResult:
     config: ScenarioConfig
@@ -211,6 +215,7 @@ class SimResult:
     observations: pd.DataFrame = field(default_factory=pd.DataFrame)
     control_trace: pd.DataFrame = field(default_factory=pd.DataFrame)   # one row per controller update
     cav_events: pd.DataFrame = field(default_factory=pd.DataFrame)      # CACC fallbacks: time_s, vehicle_id, reason
+    gap_stats: dict = field(default_factory=dict)   # every-step gap/deceleration minima by follower type (E9e D2)
     # observations: one row per detector interval (interfaces.Observation fields), empty if no detectors
 
     def summary(self) -> dict:
@@ -349,6 +354,8 @@ class FreewaySegment:
         self.queue = {MAIN: deque(), RAMP: deque()}
         self.n_arrived = n_init
         self.min_gap = np.inf
+        self.gap_stats = {f"{m}_{k}": (np.inf if m.startswith("min") else 0.0)
+                          for k in GAP_TYPES for m in ("min_gap_m", "min_time_gap_s", "max_decel_mps2")}
         self.lc_log: list[tuple] = []
         self.last_arrival = float(max(main_arr.max(initial=0.0), ramp_arr.max(initial=0.0)))
         # Detectors are passive: they read the state and never change it.
@@ -908,6 +915,7 @@ class FreewaySegment:
                 self.min_gap = min(self.min_gap, g)
                 if g <= 0:
                     raise RuntimeError(f"collision/overlap at t={t:.2f}s (min gap {g:.3f} m)")
+            self._track_gaps(accs, acc_r, gaps, s_r)
             # 4) record state at t
             if k % rec_every == 0:
                 for lane_id, ln, acc in [*((i, ln, a) for i, (ln, a) in enumerate(zip(self.lanes, accs))),
@@ -974,7 +982,33 @@ class FreewaySegment:
         cav_events = pd.DataFrame(ev, columns=["time_s", "vehicle_id", "reason"]).sort_values(
             ["time_s", "vehicle_id"], ignore_index=True)
         return SimResult(cfg, p, traj, vehicles, counts, end_t, float(self.min_gap), cleared, lc, obs, trace,
-                         cav_events)
+                         cav_events, {k: float(v) for k, v in self.gap_stats.items()})
+
+    def _track_gaps(self, accs, acc_r, gaps, s_r) -> None:
+        """Every-step minima for the E9 gap criteria (experiment log E9e D2), from the applied accelerations
+        and current gaps (evaluation only, nothing here feeds back into the dynamics). Followers only: the
+        most downstream vehicle of each lane (index 0) has no leader (mainline) or the lane end (ramp).
+        Types: 'eq' equipped follower, 'hh' human behind human, 'he' human behind equipped. Time gap = net
+        gap / own speed, only while v > TIME_GAP_MIN_SPEED. max_decel is over the follower's applied
+        acceleration (all demands, incl. courtesy), as a positive number."""
+        lanes = [(ln, a, s) for ln, a, s in zip(self.lanes, accs, gaps)]
+        if self.ramp:
+            lanes.append((self.rlane, acc_r, s_r))
+        st = self.gap_stats
+        for ln, a, s in lanes:
+            if len(ln) < 2:
+                continue
+            ids, v, s, a = ln.ids[1:], ln.v[1:], s[1:], a[1:]
+            eq = self.equipped[ids]
+            lead_eq = self.equipped[ln.ids[:-1]]
+            for key, sel in (("eq", eq), ("hh", ~eq & ~lead_eq), ("he", ~eq & lead_eq)):
+                if not sel.any():
+                    continue
+                st[f"min_gap_m_{key}"] = min(st[f"min_gap_m_{key}"], float(s[sel].min()))
+                st[f"max_decel_mps2_{key}"] = max(st[f"max_decel_mps2_{key}"], float(-a[sel].min()))
+                fast = sel & (v > TIME_GAP_MIN_SPEED)
+                if fast.any():
+                    st[f"min_time_gap_s_{key}"] = min(st[f"min_time_gap_s_{key}"], float((s[fast] / v[fast]).min()))
 
 
 SingleLaneSegment = FreewaySegment  # backward-compatible name: a segment with no ramp configured

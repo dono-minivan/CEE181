@@ -295,8 +295,9 @@ def dt_check(c_m: float) -> pd.DataFrame:
         r["pass_3pct"] = bool(abs(r["ttt_veh_h_dev_pct"]) <= 3.0 and abs(r["served_600_2100_vph_dev_pct"]) <= 3.0)
         rows.append(r)
     out = pd.DataFrame(rows)
-    df.to_csv(RES / "E9B_dtcheck_runs.csv", index=False)
-    out.to_csv(RES / "E9B_dtcheck.csv", index=False)
+    tag = "_s3r2" if "s3r2" in S3R.name else ""   # E9B_dtcheck.csv itself is the S3r check (E9e)
+    df.to_csv(RES / f"E9B_dtcheck{tag}_runs.csv", index=False)
+    out.to_csv(RES / f"E9B_dtcheck{tag}.csv", index=False)
     return out
 
 
@@ -305,7 +306,7 @@ def main(argv: list[str]) -> None:
     pd.set_option("display.max_columns", 40)
     c_m = merge_capacity_s3r()
     dt = float(argv[argv.index("--dt") + 1]) if "--dt" in argv else DT_B
-    print(f"C_m(S3r, r={RAMP_SHARE}) = {c_m:.1f} veh/h, dt = {dt} s")
+    print(f"C_m(S3r2, r={RAMP_SHARE}) = {c_m:.1f} veh/h, dt = {dt} s")
     if "--quick" in argv:
         df = sweep([(1.35, "human", 0.0, 181, c_m, dt), (1.35, "acc", 1.0, 181, c_m, dt)], processes=2)
         print(df[["mode", "p", "ttt_veh_h", "served_600_2100_vph", "congested_min_M_mrg",
@@ -313,7 +314,7 @@ def main(argv: list[str]) -> None:
         return
     if "--dtcheck" in argv:
         print(dt_check(c_m).round(3).T.to_string())
-        print("wrote results/E9B_dtcheck.csv, E9B_dtcheck_runs.csv")
+        print("wrote results/E9B_dtcheck_s3r2.csv, E9B_dtcheck_s3r2_runs.csv")
         return
     if "--run" in argv:
         x = float(argv[argv.index("--run") + 1])

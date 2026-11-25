@@ -627,6 +627,9 @@ class FreewaySegment:
         """cav config keys: p_equipped (0-1), mode ('acc' | 'cacc'), placement_seed, tau_s (0.1),
         delay_s (0.15), loss_prob (0), loss_seed, outages ([[start_s, end_s], ...]), comms (True),
         max_age_ticks (5; null = no age limit, the E9 mechanism check with fallback disabled),
+        broadcast ('command' = the controller's car-following command u, E9c and E9e as run | 'effective' =
+        min(u, the other demands applied on top: lane end, gap seeking, courtesy, yielding), team decision
+        2026-11-25, E9e; identical to 'command' when no other demand binds, e.g. everywhere in setting A),
         controller ('eq1126' = the E9 ACC/CACC of tmc.cav, default | 'ploeg' = tmc.ploeg, E9d, setting A only)
         with, for 'ploeg': ff ('none' | 'sensor' | 'v2v'), spacing ('ctg' | 'idm'), h_s (1.0), r_m (2.0).
         For 'ploeg' the V2V channel exists iff ff = 'v2v'; mode is ignored.
@@ -653,6 +656,9 @@ class FreewaySegment:
             raise ValueError(f"cav.controller must be 'eq1126' or 'ploeg', got {self.cav_controller!r}")
         if self.cav_mode not in ("acc", "cacc"):
             raise ValueError(f"cav.mode must be 'acc' or 'cacc', got {self.cav_mode!r}")
+        self.cav_broadcast = str(c.get("broadcast", "command"))
+        if self.cav_broadcast not in ("command", "effective"):
+            raise ValueError(f"cav.broadcast must be 'command' or 'effective', got {self.cav_broadcast!r}")
         self.cav_tau = float(c.get("tau_s", 0.1))
         self.cav_max_age = c.get("max_age_ticks", 5)
         spt = int(round(TICK_S / self.cfg.dt_s))
@@ -698,6 +704,24 @@ class FreewaySegment:
                                   bool(self.equipped[leader]) if leader is not None else False)
                 if self.channel is not None:
                     self.channel.send(vid, tick, out["u"])
+
+    def _amend_broadcasts(self, tick: int, accs, acc_r) -> None:
+        """broadcast = 'effective' (E9e): once this tick's applied accelerations are known, an equipped
+        vehicle whose applied acceleration is below its realized controller output (another demand bound
+        it: lane end, gap seeking, courtesy, yielding) amends this tick's message to min(u, applied), the
+        acceleration it is actually commanded to follow. With delay >= 1 tick no follower has used the
+        message yet. (A 0-tick delay would see the unamended u; it is used only in setting A, where no
+        other demand exists.)"""
+        for ln, acc in [*zip(self.lanes, accs), (self.rlane, acc_r)]:
+            for i, vid in enumerate(ln.ids):
+                vid = int(vid)
+                ctl = self.ctl.get(vid)
+                a_r = self._a_real.get(vid)
+                if ctl is None or a_r is None or not acc[i] < a_r - 1e-12:
+                    continue
+                u_eff = min(float(ctl.u), float(acc[i]))
+                if u_eff < ctl.u:
+                    self.channel.amend(vid, tick, u_eff)
 
     def _cav_actuate(self, dt: float) -> None:
         """Advance every on-road controller's actuator lag by one step (realized accelerations)."""
@@ -937,6 +961,9 @@ class FreewaySegment:
                 if g <= 0:
                     raise RuntimeError(f"collision/overlap at t={t:.2f}s (min gap {g:.3f} m)")
             self._track_gaps(accs, acc_r, gaps, s_r)
+            if self._cav_on and self.channel is not None and self.cav_broadcast == "effective" \
+                    and k % self._spt == 0:
+                self._amend_broadcasts(k // self._spt, accs, acc_r)
             # 4) record state at t
             if k % rec_every == 0:
                 for lane_id, ln, acc in [*((i, ln, a) for i, (ln, a) in enumerate(zip(self.lanes, accs))),

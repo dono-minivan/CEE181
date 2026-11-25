@@ -160,3 +160,58 @@ def test_time_step_sensitivity_with_cavs(mode):
 def test_dt_must_divide_tick():
     with pytest.raises(ValueError):
         run_platoon(dict(S, duration_s=1.0), NOM, 0.0, dt=0.2, cav=cav(1.0))
+
+
+# --------------------------------------------------------------------------- broadcast = 'effective' (E9e, 2026-11-25)
+
+def test_effective_broadcast_is_identical_in_setting_a():
+    """No lane-end / courtesy / gap-seeking demand in setting A, so nothing is ever amended."""
+    for p_eq in (0.5, 1.0):
+        a, _ = run_platoon(S, NOM, T_R, cav=cav(p_eq, "cacc"))
+        b, _ = run_platoon(S, NOM, T_R, cav=cav(p_eq, "cacc", broadcast="effective"))
+        assert np.array_equal(traj(a), traj(b))
+
+
+def test_channel_amend_replaces_only_this_ticks_message():
+    ch = cavmod.V2VChannel(delay_s=0.15)
+    ch.send(7, 10, 1.0)
+    assert not ch.amend(7, 9, -3.0)                    # not the newest tick
+    assert ch.amend(7, 10, -2.0)
+    assert ch.latest(7, 12, 0) == (-2.0, 10)
+    lossy = cavmod.V2VChannel(delay_s=0.15, outages=[(0.0, 10.0)])
+    lossy.send(7, 10, 1.0)                              # lost in the outage
+    assert not lossy.amend(7, 10, -2.0) and lossy.latest(7, 12, 0) is None
+
+
+def test_effective_broadcast_sends_min_of_command_and_applied_at_the_merge():
+    """S3r2 merge, all equipped: after each tick, every equipped vehicle's message equals its command u,
+    or min(u, applied acceleration) when another demand (lane end, gap seeking, courtesy) bound it."""
+    checked = {"bound": 0, "free": 0}
+
+    class Spy(FreewaySegment):
+        def _amend_broadcasts(self, tick, accs, acc_r):
+            super()._amend_broadcasts(tick, accs, acc_r)
+            for ln, acc in [*zip(self.lanes, accs), (self.rlane, acc_r)]:
+                for i, vid in enumerate(ln.ids):
+                    ctl, a_r = self.ctl.get(int(vid)), self._a_real.get(int(vid))
+                    q = self.channel._q.get(int(vid))
+                    if ctl is None or a_r is None or not q or q[-1][0] != tick:
+                        continue
+                    bound = acc[i] < a_r - 1e-12
+                    want = min(ctl.u, float(acc[i])) if bound else ctl.u
+                    assert q[-1][2] == pytest.approx(want, abs=1e-12)
+                    checked["bound" if bound and want < ctl.u else "free"] += 1
+
+    c = ScenarioConfig.from_yaml(ROOT / "configs" / "scenario_s3r2_onramp_zipgap_tr06_restart.yaml")
+    c.max_time_s = 400.0
+    c.cav = cav(1.0, "cacc", broadcast="effective")
+    res = Spy(P, c).run()
+    assert checked["bound"] > 0 and checked["free"] > 0
+    assert res.min_gap_m > 0
+
+
+def test_broadcast_rejects_unknown_values():
+    c = ScenarioConfig.from_yaml(ROOT / "configs" / "scenario_s3r2_onramp_zipgap_tr06_restart.yaml")
+    c.cav = cav(1.0, "cacc", broadcast="sometimes")
+    with pytest.raises(ValueError):
+        FreewaySegment(P, c)

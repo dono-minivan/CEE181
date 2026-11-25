@@ -150,6 +150,16 @@ class V2VChannel:
         while len(q) > 64:
             q.popleft()
 
+    def amend(self, sender: int, tick: int, value: float) -> bool:
+        """Replace the value of `sender`'s message sent at `tick` (same tick, before anyone can use it at a
+        delay >= 1 tick). Used for broadcast = 'effective' (E9e). A lost message stays lost. Returns True if
+        a message was amended."""
+        q = self._q.get(sender)
+        if not q or q[-1][0] != tick:
+            return False
+        q[-1] = (tick, q[-1][1], value)
+        return True
+
     def latest(self, sender: int, now_tick: int, since_tick: int) -> tuple[float, int] | None:
         """Newest message from `sender` usable at now_tick and sent at or after since_tick: (value, send_tick)."""
         for send_tick, usable, value in reversed(self._q.get(sender, ())):

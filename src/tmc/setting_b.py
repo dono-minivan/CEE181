@@ -3,7 +3,10 @@
     python -m tmc.setting_b --quick          # small example: X 1.35, seed 181, human vs ACC p = 1 (~2 runs)
     python -m tmc.setting_b --dtcheck        # D3: human and ACC p = 1 at dt 0.05 vs 0.1 (X 1.35, seed 181)
     python -m tmc.setting_b --run 1.35       # every case at one X_peak, seeds 181-184 (appends to E9B_runs.csv)
+    python -m tmc.setting_b --run 1.20 --with-eff   # ... plus CACC with the effective-command broadcast
+    python -m tmc.setting_b --run-eff 1.35   # only the effective-broadcast CACC cases (mode "cacc_eff")
     python -m tmc.setting_b --holdout 1.35 acc 1.0   # one case + the human baseline on held-out seeds 185-188
+    python -m tmc.setting_b --holdout 1.35 all       # every case on the held-out seeds
     python -m tmc.setting_b --judge          # judgement + figures from results/E9B_runs.csv (no simulation)
     dt is 0.05 s for all of setting B (D3 failed on S3r); --dt X overrides it for diagnostics only
 
@@ -49,6 +52,9 @@ HOLDOUT = [185, 186, 187, 188]
 X_PEAKS = [1.35, 1.20]                      # D5 order: 1.35 first
 PENETRATIONS = [0.25, 0.5, 1.0]
 CASES = [("human", 0.0)] + [(m, p) for p in PENETRATIONS for m in ("acc", "cacc")]
+# CACC with the effective-command broadcast (team decision 2026-11-25 after the X 1.35 as-run result, E9e);
+# the as-run "cacc" rows (broadcast = command) are kept and reported.
+EFF_CASES = [("cacc_eff", p) for p in PENETRATIONS]
 TAU_S, DELAY_S = 0.1, 0.15                  # nominal (design record section 7); tau = 0.5 s cut (E9e D5)
 BETTER_PCT, SEEDS_NEEDED = 2.0, 3           # E7c "better" rule
 THROUGHPUT_PCT = 2.0
@@ -67,7 +73,7 @@ def merge_capacity_s3r(share: float = RAMP_SHARE) -> float:
 
 
 def build_config(x_peak: float, seed: int, c_m: float, mode: str = "human", p: float = 0.0,
-                 dt: float = DT_B) -> ScenarioConfig:
+                 dt: float = DT_B, broadcast: str = "command") -> ScenarioConfig:
     cfg = ScenarioConfig.from_yaml(S3R)
     cfg.seed = seed
     cfg.ramp.seed = None
@@ -79,6 +85,8 @@ def build_config(x_peak: float, seed: int, c_m: float, mode: str = "human", p: f
     cfg.control = None
     cfg.cav = None if mode == "human" else {"p_equipped": p, "mode": mode, "placement_seed": seed,
                                             "tau_s": TAU_S, "delay_s": DELAY_S}
+    if mode == "cacc" and broadcast != "command":
+        cfg.cav["broadcast"] = broadcast
     cfg.scenario_id = f"E9B_Xp{x_peak:.2f}_{mode}_p{p:.2f}"
     cfg.demand_id = f"D9B_Xp{x_peak:.2f}_r{RAMP_SHARE:.2f}_Cm{c_m:.0f}"
     return cfg
@@ -99,8 +107,11 @@ def merge_discharge(obs: pd.DataFrame, cong_mrg: pd.DataFrame) -> float:
 
 
 def run_case(args) -> dict:
-    x_peak, mode, p, seed, c_m, dt = args
-    cfg = build_config(x_peak, seed, c_m, mode, p, dt)
+    x_peak, mode, p, seed, c_m, dt, *rest = args
+    broadcast = rest[0] if rest else "command"
+    if mode == "cacc_eff":                          # CACC with broadcast = 'effective' (E9e, 2026-11-25)
+        mode, broadcast = "cacc", "effective"
+    cfg = build_config(x_peak, seed, c_m, mode, p, dt, broadcast)
     prm = load_params(cfg.param_set)
     cap = capacity(prm)
     v_c, occ_c = cap["v_c_mps"], critical_occupancy(cap, prm)
@@ -114,7 +125,8 @@ def run_case(args) -> dict:
     speeds = {d: o.loc[o["sensor_id"] == d, "mean_speed_mps"].dropna() for d in ("M_up", "M_mrg")}
     ev = res.cav_events
     row = {
-        "x_peak": x_peak, "mode": mode, "p": p, "seed": seed, "dt_s": dt, "c_m_vph": c_m,
+        "x_peak": x_peak, "mode": "cacc_eff" if broadcast == "effective" else mode, "p": p, "seed": seed,
+        "dt_s": dt, "c_m_vph": c_m, "broadcast": broadcast if mode == "cacc" else "",
         "n_vehicles": int(len(v)), "n_equipped": int(v["equipped"].sum()),
         "ttt_veh_h": s["total_travel_time_veh_h"],
         "ttt_main_origin_veh_h": s["total_travel_time_mainline_origin_veh_h"],
@@ -166,10 +178,10 @@ def better(df: pd.DataFrame, a: tuple, b: tuple) -> dict:
             "n_seeds_lower": n_lower, "better": bool(pct <= -BETTER_PCT and n_lower >= SEEDS_NEEDED)}
 
 
-def d1_reduced(df: pd.DataFrame, p: float) -> dict:
+def d1_reduced(df: pd.DataFrame, p: float, mode: str = "cacc") -> dict:
     """E9e D1: CACC congested minutes at M_mrg vs the same-seed human AND ACC run."""
-    h = _paired(df, ("cacc", p), ("human", 0.0), "congested_min_M_mrg")
-    a = _paired(df, ("cacc", p), ("acc", p), "congested_min_M_mrg")
+    h = _paired(df, (mode, p), ("human", 0.0), "congested_min_M_mrg")
+    a = _paired(df, (mode, p), ("acc", p), "congested_min_M_mrg")
     ok = []
     for seed in h.index.intersection(a.index):
         c = h.loc[seed, "a"]
@@ -206,7 +218,7 @@ def judge(df: pd.DataFrame) -> pd.DataFrame:
     for (x, dt), g in df.groupby(["x_peak", "dt_s"]):
         hum = g[g["mode"] == "human"]
         served_h = hum["served_600_2100_vph"].mean()
-        for mode, p in CASES[1:]:
+        for mode, p in CASES[1:] + EFF_CASES:
             c = g[(g["mode"] == mode) & np.isclose(g["p"], p)]
             if c.empty:
                 continue
@@ -220,12 +232,12 @@ def judge(df: pd.DataFrame) -> pd.DataFrame:
             row["congested_min_M_mrg_human"] = hum["congested_min_M_mrg"].mean()
             row["merge_discharge_vph"] = c["merge_discharge_vph"].mean()
             row["merge_discharge_human_vph"] = hum["merge_discharge_vph"].mean()
-            if mode == "cacc":
-                va = better(g, ("cacc", p), ("acc", p))
-                vr = better(g, ("acc", p), ("cacc", p))
+            if mode in ("cacc", "cacc_eff"):
+                va = better(g, (mode, p), ("acc", p))
+                vr = better(g, ("acc", p), (mode, p))
                 row.update({"ttt_vs_acc_pct": va.get("ttt_pct"), "seeds_lower_than_acc": va.get("n_seeds_lower"),
                             "cacc_better_than_acc": va.get("better"), "acc_better_than_cacc": vr.get("better")})
-                row.update(d1_reduced(g, p))
+                row.update(d1_reduced(g, p, mode))
             row.update(gaps_ok(g, mode, p))
             out.append(row)
     return pd.DataFrame(out)
@@ -238,7 +250,8 @@ def plot(df: pd.DataFrame) -> list[Path]:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     paths = []
-    style = {"acc": ("ACC (sensors)", "#1f77b4", "o"), "cacc": ("CACC (V2V)", "#d62728", "^")}
+    style = {"acc": ("ACC (sensors)", "#1f77b4", "o"), "cacc": ("CACC, V2V sends u (as run)", "#d62728", "^"),
+             "cacc_eff": ("CACC, V2V sends effective command", "#2ca02c", "s")}
     for col, ylab, name in [("ttt_veh_h", "total travel time (veh*h, incl. ramp wait)", "E9B_ttt_vs_p.png"),
                             ("congested_min_M_mrg", "congested minutes at M_mrg (E7c definition)",
                              "E9B_congestion_vs_p.png")]:
@@ -250,7 +263,7 @@ def plot(df: pd.DataFrame) -> list[Path]:
             for mode, (lab, color, mk) in style.items():
                 pts = [(0.0, h)] + [(p, g[(g["mode"] == mode) & np.isclose(g["p"], p)][col]) for p in PENETRATIONS]
                 pts = [(p, s) for p, s in pts if len(s)]
-                off = -0.012 if mode == "acc" else 0.012
+                off = {"acc": -0.015, "cacc": 0.0, "cacc_eff": 0.015}[mode]
                 for p, s in pts:
                     ax.scatter(np.full(len(s), p + off), s, color=color, alpha=0.35, s=14, marker=mk)
                 ax.plot([p + off for p, _ in pts], [s.mean() for _, s in pts], color=color, marker=mk, label=lab)
@@ -318,11 +331,19 @@ def main(argv: list[str]) -> None:
         return
     if "--run" in argv:
         x = float(argv[argv.index("--run") + 1])
-        df = _append(sweep(jobs_for(x, SEEDS, c_m, dt)), RUNS_CSV)
+        cases = CASES + EFF_CASES if "--with-eff" in argv else CASES
+        df = _append(sweep(jobs_for(x, SEEDS, c_m, dt, cases)), RUNS_CSV)
+    elif "--run-eff" in argv:
+        x = float(argv[argv.index("--run-eff") + 1])
+        df = _append(sweep(jobs_for(x, SEEDS, c_m, dt, EFF_CASES)), RUNS_CSV)
     elif "--holdout" in argv:
         i = argv.index("--holdout")
-        x, mode, p = float(argv[i + 1]), argv[i + 2], float(argv[i + 3])
-        cases = [("human", 0.0), (mode, p)] + ([("acc", p)] if mode == "cacc" else [])
+        x, mode = float(argv[i + 1]), argv[i + 2]
+        if mode == "all":                       # every case incl. cacc_eff (confirms all wins at once)
+            cases = CASES + EFF_CASES
+        else:
+            p = float(argv[i + 3])
+            cases = [("human", 0.0), (mode, p)] + ([("acc", p)] if mode in ("cacc", "cacc_eff") else [])
         hd = sweep(jobs_for(x, HOLDOUT, c_m, dt, cases))
         path = RES / "E9B_holdout_runs.csv"
         hd = _append(hd, path)
@@ -332,7 +353,7 @@ def main(argv: list[str]) -> None:
         return
     else:
         df = pd.read_csv(RUNS_CSV)
-    if "--judge" in argv or "--run" in argv:
+    if "--judge" in argv or "--run" in argv or "--run-eff" in argv:
         jd = judge(df)
         jd.to_csv(RES / "E9B_judgement.csv", index=False)
         print(jd.round(3).T.to_string())

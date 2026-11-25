@@ -8,7 +8,7 @@ Is actuated freeway on-ramp metering better than pre-timed or no signal at all v
 - *Congested interval.* A 30-s interval at M_mrg (50 m upstream of the merge) is congested when its mean speed < v_c (computed IDM critical speed, 18.6 m/s = 41.5 mph) OR its occupancy > o_c, the critical occupancy o_c = k_c (l + L_loop) = 0.0261 veh/m x 7 m = 18.3% (computed in `tmc.report_figures.critical_occupancy`, reported as 18%). A congestion episode needs >= 2 consecutive congested intervals (60 s). o_c was chosen over a provisional data-based 15% (gap between free-flow 5-6% and congested 16-50% at M_mrg in E7) so the threshold traces to theory. Check: the E7 congested-minutes table is identical with 15% and 18% (`results/PR_congestion_minutes.csv`).
 
 ## 2. Model and assumptions
-IDM, ballistic update, parameters in `configs/idm_baseline.yaml`. Limitations: no reaction time (ACC-like), deterministic driving (stochastic only in arrivals).
+IDM, ballistic update, parameters in `configs/idm_baseline.yaml`. Limitations: deterministic driving (stochastic only in arrivals and CAV placement). Up to E7 drivers have no reaction time (ACC-like); from E9 on, humans have a reaction delay T_r = 0.6 s on car-following, restarted after every leader change in setting B (section 7).
 
 Baseline simulator (`src/tmc/network.py`, single lane, no merge yet):
 - Arrivals: piecewise-constant demand, Poisson (seeded) or uniform.

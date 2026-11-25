@@ -64,13 +64,19 @@ CAV pathway, E9 setting B (S3r2 merge, humans with T_r = 0.6 s restarted at lead
     pytest
 
 ## Status
-IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit, and an on-ramp merge (provisional merge model, see experiment log E1 and E2). Verified by 50 tests (see `docs/design_record.md` section 4). Animated viewer available. Virtual detectors (loops, stations, ramp demand counter) with a count audit. Merge-capacity measurement (E4, E6); no-control baseline S3 (zipper + gap-seeking merge, X_m stated against its measured capacity C_m). Ramp meter with no-signal / pre-timed / ALINEA control, a forecast-based queue override and decision traces; evaluation sweep (E7). Not yet built: the final pathway (tentatively CAV, subject to change).
+Complete for the shared TMC foundation and the CAV final pathway. Verified by 199 tests (`pytest`; see `docs/design_record.md` section 4).
+- Simulator: IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit and an on-ramp merge; zipper courtesy + gap-seeking merge (S3, the no-control baseline). Animated viewer.
+- Observation and control: virtual detectors (loops, stations, ramp demand counter) with a count audit; queue estimation and short-horizon forecasts; ramp meter with no-signal / pre-timed / ALINEA control, a forecast-based queue override and decision traces; evaluation sweep (E7).
+- Human drivers (E9): optional reaction delay T_r = 0.6 s on car-following (`drivers: reaction_time_s`). With `leader_change_delay: restart` (S3r2, used in setting B) the delay restarts after every leader change: for T_r after a merge, cut-in or leader exit the driver uses current inputs. The earlier rule (`delayed_gap`, S3r, E9b) let just-merged vehicles react to a stale, near-zero gap and brake unrealistically hard (experiment log E9e).
+- CAV pathway: textbook ACC (Treiber & Kesting Eq. 11.26 on an IDM base) and CACC (leader's commanded acceleration by V2V, Ploeg et al. 2011) with actuator lag, tick-based V2V channel and logged fallbacks (`cav.py`); setting A platoon experiments (E9c, plus the Ploeg CACC extension E9d) and setting B merge experiments (E9e, `setting_b.py`). Merge capacities at r = 0.28: S3 (no delay) C_m = 1157 veh/h (E6); S3r2 (T_r = 0.6 s, restart rule, dt 0.05 s) C_m = 1069 veh/h (E9b2). Setting B states X_m against 1069.
 
 ## Known limitations
-- The S3 merge discharges C_m ~ 1157 veh/h at ramp share 0.28 (0.66 of the computed IDM capacity q_c). Control results are stated in X_m = demand / C_m and hold only for r = 0.28 (E6).
-- The on-ramp merge model is provisional. Single lane: the merge discharges ~1430-1490 veh/h, below q_c (E1). Two lanes: the merge deadlocks once a ramp vehicle stops at the lane end (E2); the optional gap-seeking and anticipation fixes reach at most 88% of 2 q_c (E3), so the two-lane option is parked. Not a valid no-control baseline yet.
-- Lane changes are instantaneous (no lateral motion). MOBIL parameters are still to be verified against the primary source.
-- Deterministic IDM drivers (no reaction time or noise). Randomness comes only from arrivals.
+- Merge capacity, and therefore every X_m, holds only for ramp share r = 0.28: C_m = 1157 veh/h for S3 (0.66 of the computed IDM capacity q_c; E1-E7) and 1069 veh/h for S3r2 (E9 setting B). S3r's C_m = 978 (E9b) was depressed by the stale-gap artifact and is superseded.
+- The two-lane merge option is parked: it deadlocks once a ramp vehicle stops at the lane end (E2), and the gap-seeking and anticipation fixes reach at most 88% of 2 q_c (E3). All control and CAV results use the single-lane S3 merge.
+- Lane changes are instantaneous (no lateral motion). MOBIL parameters (p = 0.2, threshold 0.1 m/s^2, b_safe = 4 m/s^2) were checked against Kesting, Treiber & Helbing 2007 and Treiber & Kesting 2013 (`docs/source_to_design.md`); the two sources differ on b_safe (4 vs 2 m/s^2), and we use the original MOBIL value. The merge safety check limits braking, not the gap, so merging vehicles can land ~0.8 m behind a faster leader (E9e).
+- Human drivers have a reaction delay on car-following only; merge, courtesy and lane-change decisions are undelayed, and with the restart rule humans react to a cut-in without delay (optimistic for humans). No estimation errors or noise; randomness comes only from arrivals and CAV placement.
+- CAV merge decisions are identical to human ones (no cooperative merging), so the CAV experiments cannot show a merge-decision benefit.
+- With T_r on, results depend on the time step: setting B runs at dt 0.05 s (dt 0.1 s biased human TTT by ~20% on S3r, E9e).
 - The entrance discharges at most about q_c. Mainline demand above that queues at the entrance.
 
 ## AI-use disclosure

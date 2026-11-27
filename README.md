@@ -17,7 +17,7 @@ Reproducible run command (single-lane IDM baseline, scenario `configs/scenario_s
 
     python -m tmc.example
 
-It prints a summary and writes `results/S0_single_lane_time_space.png`, `..._counts.png`, and `..._vehicles.csv`. Pass another scenario YAML path as an argument to run it. Module examples: `python -m tmc.idm` prints computed capacity; `python -m tmc.detectors` runs S1 and prints the virtual detector flows.
+It prints a summary and writes `results/S0_single_lane_time_space.png`, `..._counts.png`, and `..._vehicles.csv`. Pass another scenario YAML path as an argument to run it. Module examples: `python -m tmc.idm` prints computed capacity; `python -m tmc.detectors` runs S1 and prints the virtual detector flows; `python -m tmc.wave_speed` runs the E10 wave-speed check (simulated braking and stop-and-go wave speed vs the LWR shock speed, ~10 s).
 
 Animated viewer (mainline, on-ramp, queues; vehicles colored by speed; click a car to trace it):
 
@@ -72,7 +72,7 @@ CAV pathway, E9 setting B (S3r2 merge, humans with T_r = 0.6 s restarted at lead
     pytest
 
 ## Status
-Complete for the shared TMC foundation and the CAV final pathway. Verified by 199 tests (`pytest`; see `docs/design_record.md` section 4).
+Complete for the shared TMC foundation and the CAV final pathway. Verified by 209 tests (`pytest`; see `docs/design_record.md` section 4).
 - Simulator: IDM mainline (1 or 2+ lanes, symmetric MOBIL lane changing) with entry queue, free exit and an on-ramp merge; zipper courtesy + gap-seeking merge (S3, the no-control baseline). Animated viewer.
 - Observation and control: virtual detectors (loops, stations, ramp demand counter) with a count audit; queue estimation and short-horizon forecasts; ramp meter with no-signal / pre-timed / ALINEA control, a forecast-based queue override and decision traces; evaluation sweep (E7).
 - Human drivers (E9): optional reaction delay T_r = 0.6 s on car-following (`drivers: reaction_time_s`). With `leader_change_delay: restart` (S3r2, used in setting B) the delay restarts after every leader change: for T_r after a merge, cut-in or leader exit the driver uses current inputs. The earlier rule (`delayed_gap`, S3r, E9b) let just-merged vehicles react to a stale, near-zero gap and brake unrealistically hard (experiment log E9e).
@@ -86,6 +86,7 @@ Complete for the shared TMC foundation and the CAV final pathway. Verified by 19
 - CAV merge decisions are identical to human ones (no cooperative merging), so the CAV experiments cannot show a merge-decision benefit.
 - With T_r on, results depend on the time step: setting B runs at dt 0.05 s (dt 0.1 s biased human TTT by ~20% on S3r, E9e).
 - The entrance discharges at most about q_c. Mainline demand above that queues at the entrance.
+- Wave speeds follow LWR only for developed stop-and-go waves (within 2%, E10). Short, weak braking pulses travel upstream more slowly than the LWR shock (15-47% in the road frame, ~3-10% per vehicle) because the car-following model is dispersive at finite wavelengths.
 
 ## AI-use disclosure
 Claude Code (AI assistant) drafted code, tests, and documentation drafts in this repo. The team reviews each piece and must be able to explain it. What was drafted, and how it was checked, is logged in `docs/design_record.md` section 8:
@@ -98,6 +99,7 @@ Claude Code (AI assistant) drafted code, tests, and documentation drafts in this
 - 2026-11-24: Ploeg et al. 2011 CACC controller and string-stability theory (`ploeg.py`), E9d extension runner and tests.
 - 2026-11-25: viewer update for E9 (`viz.py`, `viewer_template.html`: equipped markers, fallback state, driver panel, `--e9b` / `--e9a` / `--examples`, `tests/test_viz.py`).
 - 2026-11-26: combined viewer `results/viewer.html` (all example runs, dropdown run switcher keeping time and view; `viz.write_combined`, written by `--examples`; replaces the 11 separate committed viewers).
+- 2026-11-26: wave-speed check E10 (`wave_speed.py`, `tests/test_wave_speed.py`): developed stop-and-go waves match the LWR shock within 2%; short braking pulses are slower than LWR (registered 10% check failed, explained in the log). E4 minimum-speed note resolved; E8 dropped (not run).
 - 2026-11-25: E9 setting B runner (`setting_b.py`), every-step gap tracker, reaction-delay restart at leader changes (S3r2), effective-command V2V broadcast option, E9b2 capacity re-measurement.
 
 Earlier (Intermediate 1), AI was used to gather papers, format deliverables, summarize topics, and draft verification/fallback plans. No AI output is accepted as a result until it passes the verification tests and the checks recorded in the design record.

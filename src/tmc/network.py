@@ -259,6 +259,8 @@ class SimResult:
             "peak_ramp_queue_veh": int(c["n_queued_ramp"].max()) if len(c) else 0,
             "min_gap_m": self.min_gap_m,
             "min_speed_mps": float(tr["speed_mps"].min()) if len(tr) else float("nan"),
+            # every vehicle on a mainline lane, incl. merged ramp vehicles (which may merge from a stop at the
+            # lane end; experiment log E4 note). E7 / E9 use detector speeds instead.
             "min_mainline_speed_mps": float(main_speeds.min()) if len(main_speeds) else float("nan"),
         }
 

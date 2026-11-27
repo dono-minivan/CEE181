@@ -25,7 +25,7 @@ Animated viewer (mainline, on-ramp, queues; vehicles colored by speed; click a c
     python -m tmc.viz configs/scenario_s0_single_lane.yaml --open
     python -m tmc.viz configs/scenario_s2_twolane_onramp.yaml --open   # two lanes + lane changing
 
-This writes `results/<scenario_id>_viewer.html`, a self-contained file.
+This writes `results/<scenario_id>_viewer.html`, a self-contained file (single-run viewers are not committed; `.gitignore` skips them).
 
 Ramp control in the viewer (meter signal, detectors, the controller's decision at each moment, and a timeline of ramp queue and meter rate; E7 demand at a chosen peak X_m):
 
@@ -38,7 +38,9 @@ E9 viewers (equipped vehicles carry a roof marker, orange while a CACC vehicle i
 
     python -m tmc.viz --e9b 1.35 --mode cacc_eff --p 0.5 --open   # setting B: S3r2 merge, modes human / acc / cacc / cacc_eff
     python -m tmc.viz --e9a nominal --mode cacc --p 0.5 --open     # setting A: platoon braking wave, follows the lead
-    python -m tmc.viz --examples                                   # regenerate every viewer in results/
+    python -m tmc.viz --examples                                   # regenerate results/viewer.html (all example runs)
+
+All example runs in one page: open `results/viewer.html` and pick a run from the dropdown (grouped: basic scenarios, E7 ramp metering, E9 setting B, E9 setting A). Switching keeps the time, close-up position and width, and selected car, so you see the same moment in the other run; `[` / `]` step through the runs in a group. Add `#run=<key>` to the URL to open a given run, e.g. `viewer.html#run=E9B_Xp1.35_acc_p1.00_s181&t=1500`.
  Add `#t=1200&zoom=300&x=1600` to the URL to open at a given time, width, and position.
 
 Ramp control (S3 baseline: zipper + gap-seeking merge, detector-only controllers):
@@ -95,6 +97,7 @@ Claude Code (AI assistant) drafted code, tests, and documentation drafts in this
 - 2026-11-23/24: reaction-time switch, CAV controller core (`cav.py`), CAV integration in `network.py`, E9 setting A harness and matrix runner (`disturbance.py`), E9b capacity re-measurement.
 - 2026-11-24: Ploeg et al. 2011 CACC controller and string-stability theory (`ploeg.py`), E9d extension runner and tests.
 - 2026-11-25: viewer update for E9 (`viz.py`, `viewer_template.html`: equipped markers, fallback state, driver panel, `--e9b` / `--e9a` / `--examples`, `tests/test_viz.py`).
+- 2026-11-26: combined viewer `results/viewer.html` (all example runs, dropdown run switcher keeping time and view; `viz.write_combined`, written by `--examples`; replaces the 11 separate committed viewers).
 - 2026-11-25: E9 setting B runner (`setting_b.py`), every-step gap tracker, reaction-delay restart at leader changes (S3r2), effective-command V2V broadcast option, E9b2 capacity re-measurement.
 
 Earlier (Intermediate 1), AI was used to gather papers, format deliverables, summarize topics, and draft verification/fallback plans. No AI output is accepted as a result until it passes the verification tests and the checks recorded in the design record.

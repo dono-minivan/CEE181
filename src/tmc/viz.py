@@ -3,7 +3,7 @@
     python -m tmc.viz --e7 X_PEAK [--seed N] [--control MODE[:PARAM]] [--open]
     python -m tmc.viz --e9b X_PEAK [--mode human|acc|cacc|cacc_eff] [--p P] [--seed N] [--open]
     python -m tmc.viz --e9a nominal|strong [--mode human|acc|cacc] [--p P] [--seed N] [--open]
-    python -m tmc.viz --examples          # regenerate every viewer committed in results/
+    python -m tmc.viz --examples          # regenerate results/viewer.html (all example runs)
 
   e.g. python -m tmc.viz --e7 1.35 --control alinea:0.20 --open
        python -m tmc.viz --e7 1.10 --control pretimed:800 --open
@@ -169,6 +169,27 @@ def write_viewer(res: SimResult, out_path: Path, control_label: str | None = Non
     return out_path
 
 
+def write_combined(entries: list[tuple[str, str, str, dict]], out_path: Path) -> Path:
+    """One page holding several runs, switched with a dropdown. entries: (key, group, label, export dict).
+
+    Each run is an inert <script type="application/json"> block; the page decodes only the selected one
+    and reloads on a switch, carrying time, view and selected vehicle in the URL hash."""
+    keys = [k for k, *_ in entries]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate run keys")
+    blocks = "\n".join(
+        f'<script type="application/json" id="run-{k}">'
+        + json.dumps(d, separators=(",", ":")).replace("</", r"<\/") + "</script>"
+        for k, _, _, d in entries)
+    runs = json.dumps([{"key": k, "group": g, "label": lab} for k, g, lab, _ in entries], separators=(",", ":"))
+    html = TEMPLATE.read_text(encoding="utf-8")
+    html = (html.replace("<!--__RUNDATA__-->", blocks).replace("/*__RUNS__*/null", runs)
+            .replace("/*__DATA__*/null", 'JSON.parse(document.getElementById("run-" + RUN.key).textContent)')
+            .replace("__TITLE__", "CEE 181 viewers"))
+    out_path.write_text(html, encoding="utf-8")
+    return out_path
+
+
 def _opt(argv: list[str], name: str):
     return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else None
 
@@ -221,35 +242,37 @@ def run_e9a(dist_name: str = "nominal", mode: str = "human", p_eq: float = 0.0, 
     return res, cfg.scenario_id + (f"_s{seed}" if cav else "")
 
 
-# Viewers committed in results/ (regenerate with --examples): (kind, args, extra argv)
+# Runs in the committed combined viewer results/viewer.html (regenerate with --examples), in dropdown
+# order: (group, label, viz argv).
 EXAMPLES = [
-    ("yaml", "configs/scenario_s0_single_lane.yaml", []),
-    ("yaml", "configs/scenario_s1_onramp.yaml", []),
-    ("yaml", "configs/scenario_s2_twolane_onramp.yaml", []),
-    ("e7", 1.35, ["--control", "alinea:0.20"]), ("e7", 1.35, ["--control", "none"]),
-    ("e7", 1.10, ["--control", "pretimed:800"]),
-    ("e9b", (1.35, "human", 0.0)), ("e9b", (1.35, "acc", 1.0)), ("e9b", (1.35, "cacc_eff", 0.5)),
-    ("e9a", ("nominal", "human", 0.0)), ("e9a", ("nominal", "cacc", 0.5)),
+    ("Basic scenarios", "S0 single lane", ["configs/scenario_s0_single_lane.yaml"]),
+    ("Basic scenarios", "S1 on-ramp, no control", ["configs/scenario_s1_onramp.yaml"]),
+    ("Basic scenarios", "S2 two lanes + on-ramp, no control", ["configs/scenario_s2_twolane_onramp.yaml"]),
+    ("E7 ramp metering (seed 181)", "X 1.35 · no control", ["--e7", "1.35", "--control", "none"]),
+    ("E7 ramp metering (seed 181)", "X 1.35 · ALINEA o_set 0.20", ["--e7", "1.35", "--control", "alinea:0.20"]),
+    ("E7 ramp metering (seed 181)", "X 1.10 · pre-timed 800 veh/h", ["--e7", "1.10", "--control", "pretimed:800"]),
+    ("E9 setting B (S3r2 merge, X 1.35, seed 181)", "human", ["--e9b", "1.35", "--mode", "human"]),
+    ("E9 setting B (S3r2 merge, X 1.35, seed 181)", "ACC, p = 1.00", ["--e9b", "1.35", "--mode", "acc", "--p", "1.0"]),
+    ("E9 setting B (S3r2 merge, X 1.35, seed 181)", "CACC (effective broadcast), p = 0.50",
+     ["--e9b", "1.35", "--mode", "cacc_eff", "--p", "0.5"]),
+    ("E9 setting A (platoon, nominal braking)", "human", ["--e9a", "nominal", "--mode", "human"]),
+    ("E9 setting A (platoon, nominal braking)", "CACC, p = 0.50", ["--e9a", "nominal", "--mode", "cacc", "--p", "0.5"]),
 ]
 
 
 def examples() -> None:
-    for ex in EXAMPLES:
-        kind, arg = ex[0], ex[1]
-        if kind == "yaml":
-            main([str(ROOT / arg)])
-        elif kind == "e7":
-            main(["--e7", str(arg), *ex[2]])
-        elif kind == "e9b":
-            main(["--e9b", str(arg[0]), "--mode", arg[1], "--p", str(arg[2])])
-        else:
-            main(["--e9a", arg[0], "--mode", arg[1], "--p", str(arg[2])])
+    """Run every example and write the combined results/viewer.html holding all of them."""
+    entries = []
+    for group, label, argv in EXAMPLES:
+        res, out, ctrl_label, follow = run_from_argv(argv)
+        print(f"ran {out.name.removesuffix('_viewer.html')}")
+        entries.append((out.name.removesuffix("_viewer.html"), group, label, export(res, ctrl_label, follow)))
+    out = write_combined(entries, ROOT / "results" / "viewer.html")
+    print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB, {len(entries)} runs)")
 
 
-def main(argv: list[str]) -> None:
-    if "--examples" in argv:
-        examples()
-        return
+def run_from_argv(argv: list[str]) -> tuple[SimResult, Path, str | None, int | None]:
+    """Run what a viz command line asks for: (result, viewer path, control label, vehicle to follow)."""
     vals = {_opt(argv, n) for n in ("--control", "--e7", "--seed", "--e9b", "--e9a", "--mode", "--p")}
     args = [a for a in argv if not a.startswith("--") and a not in vals]
     if _opt(argv, "--e9b") is not None or _opt(argv, "--e9a") is not None:
@@ -262,30 +285,33 @@ def main(argv: list[str]) -> None:
         else:
             res, name = run_e9a(_opt(argv, "--e9a"), mode, p_eq, seed)
             follow = 0
-        out = ROOT / "results" / f"{name}_viewer.html"
-        write_viewer(res, out, None, follow)
-        print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
-        if "--open" in argv:
-            webbrowser.open(out.as_uri())
-        return
+        return res, ROOT / "results" / f"{name}_viewer.html", None, follow
     ctrl = parse_control(_opt(argv, "--control"))
     if _opt(argv, "--e7") is not None:
         from tmc.evaluate import build_config, merge_capacity
         cfg = build_config(float(_opt(argv, "--e7")), int(_opt(argv, "--seed") or 181), merge_capacity())
         cfg.record_every_s = 1.0
     else:
-        cfg = ScenarioConfig.from_yaml(Path(args[0]) if args else DEFAULT_SCENARIO)
+        path = Path(args[0]) if args else DEFAULT_SCENARIO
+        cfg = ScenarioConfig.from_yaml(path if path.exists() else ROOT / path)   # repo-relative paths work too
         if _opt(argv, "--seed") is not None:
             cfg.seed = int(_opt(argv, "--seed"))
     if ctrl is not None:
         cfg.control = None
     res = FreewaySegment(load_params(cfg.param_set), cfg, controller=ctrl).run()
     label = ctrl.label if ctrl is not None else (cfg.control or {}).get("mode")
-    suffix = f"_{ctrl.label}" if ctrl is not None else ""
-    out = ROOT / "results" / f"{res.config.scenario_id}_s{cfg.seed}{suffix}_viewer.html" if ctrl is not None \
-        else ROOT / "results" / f"{res.config.scenario_id}_viewer.html"
+    out = ROOT / "results" / (f"{res.config.scenario_id}_s{cfg.seed}_{ctrl.label}_viewer.html" if ctrl is not None
+                              else f"{res.config.scenario_id}_viewer.html")
+    return res, out, label, None
+
+
+def main(argv: list[str]) -> None:
+    if "--examples" in argv:
+        examples()
+        return
+    res, out, label, follow = run_from_argv(argv)
     out.parent.mkdir(exist_ok=True)
-    write_viewer(res, out, label)
+    write_viewer(res, out, label, follow)
     print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
     if "--open" in argv:
         webbrowser.open(out.as_uri())

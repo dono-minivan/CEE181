@@ -67,6 +67,14 @@
 </head>
 <body>
 <main>
+  <div class="card" id="runCard" hidden>
+    <div class="controls">
+      <label>Run <select id="run" autocomplete="off"></select></label>
+      <button id="prevRun" title="previous run in this group ([)">◀</button>
+      <button id="nextRun" title="next run in this group (])">▶</button>
+      <span class="hint">switching keeps the time, close-up position, width and selected car, so you see the same moment in the other run · <b>[</b> / <b>]</b> step within the group</span>
+    </div>
+  </div>
   <h1 id="title"></h1>
   <div class="sub" id="subtitle"></div>
 
@@ -128,8 +136,13 @@
   </div>
   <div class="card"><h2>Run summary (whole simulation)</h2><div class="stats" id="summary"></div></div>
 </main>
-
+<!--__RUNDATA__-->
 <script>
+// Combined viewer: RUNS lists the embedded runs [{key, group, label}], each stored as an inert
+// <script type="application/json" id="run-KEY"> block; only the chosen one is decoded. Single-run viewer: null.
+const RUNS = /*__RUNS__*/null;
+const HASH = new URLSearchParams(location.hash.slice(1));
+const RUN = RUNS && (RUNS.find(r => r.key === HASH.get("run")) || RUNS[0]);
 const D = /*__DATA__*/null;
 const M = D.meta, R = M.ramp, C = D.counts;
 const MPH = 2.236936, FDT = M.frame_dt, NF = M.n_frames, TMAX = (NF - 1) * FDT;
@@ -556,10 +569,41 @@ if (M.follow !== null && M.follow !== undefined && byId.has(M.follow)) {
   viewW = 1200; document.getElementById("zoom").value = "1200";
 }
 // deep link: viewer.html#t=1200&zoom=300&x=1600 opens at that time / width / position
-for (const [k, v] of new URLSearchParams(location.hash.slice(1))) {
+// (combined viewer also: run=KEY, sel=ID, follow=0|1, speed=N, play=1)
+for (const [k, v] of HASH) {
   if (k === "t") t = Math.max(0, Math.min(TMAX, +v || 0));
   if (k === "zoom") { viewW = +v || viewW; document.getElementById("zoom").value = String(viewW); }
   if (k === "x") center = +v;
+  if (k === "sel") selected = byId.has(+v) ? +v : null;
+  if (k === "follow") document.getElementById("follow").checked = v === "1" && selected !== null;
+  if (k === "speed" && [...document.getElementById("speed").options].some(o => o.value === v)) {
+    speed = +v; document.getElementById("speed").value = v; }
+  if (k === "play" && v === "1" && t < TMAX) setPlaying(true);
+}
+// ---------- run switcher (combined viewer only)
+if (RUNS) {
+  document.title = `${M.scenario_id} · CEE 181 viewers`;
+  const sel = document.getElementById("run");
+  document.getElementById("runCard").hidden = false;
+  for (const g of [...new Set(RUNS.map(r => r.group))]) {
+    const og = document.createElement("optgroup"); og.label = g;
+    for (const r of RUNS.filter(r => r.group === g)) og.append(new Option(r.label, r.key));
+    sel.append(og);
+  }
+  sel.value = RUN.key;
+  const go = key => {
+    if (key === RUN.key) return;
+    const h = new URLSearchParams({ run: key, t: t.toFixed(1), x: center.toFixed(0), zoom: viewW, speed,
+      play: playing ? 1 : 0, follow: document.getElementById("follow").checked ? 1 : 0 });
+    if (selected !== null) h.set("sel", selected);
+    location.hash = h.toString(); location.reload();
+  };
+  const step = d => { const grp = RUNS.filter(r => r.group === RUN.group), i = grp.indexOf(RUN);
+    if (grp[i + d]) go(grp[i + d].key); };
+  sel.onchange = () => go(sel.value);
+  document.getElementById("prevRun").onclick = () => step(-1);
+  document.getElementById("nextRun").onclick = () => step(1);
+  document.addEventListener("keydown", e => { if (e.key === "[") step(-1); if (e.key === "]") step(1); });
 }
 requestAnimationFrame(loop);
 </script>

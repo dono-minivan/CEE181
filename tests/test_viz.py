@@ -48,3 +48,23 @@ def test_e9b_human_export_has_no_cav():
     assert all(r[7] == 0 and r[8] == [] for r in d["veh"])
     assert name == "E9B_Xp1.20_human_s181" and not d["meta"]["open_road"]
     assert np.isclose(d["summary"]["total_travel_time_veh_h"], res.summary()["total_travel_time_veh_h"], atol=0.01)
+
+
+def test_combined_viewer_embeds_each_run_and_decodes_only_the_chosen_one(tmp_path):
+    entries = []
+    for mode, p in (("human", 0.0), ("cacc", 0.5)):
+        res, name = viz.run_e9a("nominal", mode, p, 181)
+        entries.append((name, "E9A", mode, viz.export(res, follow=0)))
+    html = viz.write_combined(entries, tmp_path / "viewer.html").read_text(encoding="utf-8")
+    assert "/*__DATA__*/null" not in html and "/*__RUNS__*/null" not in html and "__RUNDATA__" not in html
+    runs = json.loads(html.split("const RUNS = ", 1)[1].split(";\n", 1)[0])
+    assert [r["key"] for r in runs] == [e[0] for e in entries]
+    for key, _, _, d in entries:                          # each block round-trips to the exported run
+        blob = html.split(f'<script type="application/json" id="run-{key}">', 1)[1].split("</script>", 1)[0]
+        assert json.loads(blob) == json.loads(json.dumps(d))
+    assert 'const D = JSON.parse(document.getElementById("run-" + RUN.key).textContent);' in html
+    try:
+        viz.write_combined(entries + entries[:1], tmp_path / "dup.html")
+        assert False, "duplicate keys accepted"
+    except ValueError:
+        pass

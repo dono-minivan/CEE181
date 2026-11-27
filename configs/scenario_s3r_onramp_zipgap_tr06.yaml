@@ -27,7 +27,7 @@ ramp:
   merge_end_m: 1750.0            # 250 m acceleration lane, ends in a standing obstacle
   approach_length_m: 250.0       # ramp entrance (stop line / future meter) to merge_start
   b_safe_mps2: 4.0               # MOBIL safe-braking limit
-  # Merge-behavior switches (PROVISIONAL, see docs/experiment_log.md E1):
+  # Merge-behavior switches (history: docs/experiment_log.md E1-E5b; zipper + gap seeking adopted as the baseline merge in E6, 2026-11-08):
   cooperative_yield: false       # mainline follower brakes (<= b) to let a ramp vehicle in
   yield_min_speed_ratio: 0.0     # ...only if v_ramp >= ratio * v_follower
   speed_adaptation: false        # ramp vehicle also follows the adjacent mainline leader

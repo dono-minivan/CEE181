@@ -17,7 +17,7 @@ interval_s seconds, right after a detector interval closes. Each update:
 Laws:
   * none       -- meter always dark (the S3 no-control merge).
   * pretimed   -- fixed rate r (best rate chosen by a sweep in tmc.evaluate, CLAUDE.md rule 4).
-  * alinea     -- r(k) = r(k-1) + K_R (o_set - o(k)), Papageorgiou et al. 1991; K_R = 70 veh/h per
+  * alinea     -- r(k) = r(k-1) + K_R (o_set - o(k)), Hadj-Salem, Blosseville & Papageorgiou 1990; K_R = 70 veh/h per
                   percent occupancy. Measured just UPSTREAM of the merge (detector M_mrg), because in
                   this model congestion forms upstream of the merge, so a downstream detector (classic
                   placement) would see occupancy fall at breakdown and raise the rate. If r_law reaches

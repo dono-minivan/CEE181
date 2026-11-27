@@ -5,8 +5,8 @@ Units: SI throughout (m, s, m/s, m/s^2). Convert to mph / veh/h only at outputs.
 Sources (see docs/source_to_design.md):
   - IDM acceleration: Treiber, Hennecke & Helbing (2000), Eqs. 6-7;
     Treiber & Kesting (2013), Eqs. 11.14-11.15.
-  - Ballistic update incl. stop-within-step correction: Treiber & Kesting (2013), Eqs. 10.9-10.10
-    (and Treiber & Kanagaraj 2015 for the stopping case).
+  - Ballistic update: Treiber & Kesting (2013), Eqs. 10.9-10.10 (also Lecture 04).
+    The stop-within-step correction (stop where v = 0, never reverse) is our design choice.
   - Equilibrium gap s_e(v) and flow q_e(v) follow from setting dv/dt = 0, dv = 0.
 
 Everything derived (capacity, critical speed, jam density) is computed here, never copied.
